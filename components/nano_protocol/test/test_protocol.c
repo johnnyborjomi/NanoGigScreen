@@ -105,6 +105,12 @@ static void test_request_frames(void)
     n = nano_build_tuner_on(buf, sizeof(buf), 440.0f, false);
     w = from_hex("0F C0 20 01 2D 00 00 DC 43 30 01 38 00 7F 00 00 00", want, sizeof(want));
     CHECK(n == 17 && memcmp(buf, want, 17) == 0);
+    n = nano_build_tempo_set(buf, sizeof(buf), 99.0f);
+    w = from_hex("0D C0 08 01 18 01 2D 00 00 C6 42 91 00 00 00", want, sizeof(want));
+    CHECK(n == 15 && memcmp(buf, want, 15) == 0);
+    n = nano_build_tempo_exit(buf, sizeof(buf), 99.0f);
+    w = from_hex("0B C0 08 01 2D 00 00 C6 42 91 00 00 00", want, sizeof(want));
+    CHECK(n == 13 && memcmp(buf, want, 13) == 0);
     w = from_hex("0C C0 08 03 18 01 20 01 28 01 01 00 00 00", want, sizeof(want));
     CHECK(memcmp(NANO_REQ_STATE, want, 14) == 0);
 }

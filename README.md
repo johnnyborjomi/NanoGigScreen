@@ -12,8 +12,9 @@ and shows, with no phone on the floor:
 - preset switching with the ◀ ▶ buttons beside the name
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
 - menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),
-  settings (presets per bank for the label), and Disconnect / Connect so Cortex Cloud can take
-  the pedal without powering the screen off. A tuner started on the pedal opens the view too.
+  settings (presets per bank for the label), a tempo view (big BPM, − / + set the pedal's tempo,
+  follows the pedal's tap tempo live), and Disconnect / Connect so Cortex Cloud can take the
+  pedal without powering the screen off. A tuner started on the pedal opens the view too.
 
 Everything about the protocol is provisional and firmware-specific (verified on NanOS 2.2.1,
 September 2026). The pedal accepts several Bluetooth clients at once, so the screen can run

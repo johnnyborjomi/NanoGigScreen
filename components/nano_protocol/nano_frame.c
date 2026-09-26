@@ -73,6 +73,28 @@ size_t nano_build_gate_bypass(uint8_t *out, size_t cap, bool enabled)
     return bypass_frame(out, cap, 0x09, enabled);
 }
 
+size_t nano_build_tempo_set(uint8_t *out, size_t cap, float bpm)
+{
+    /* The per-tap shape with field 3 = 1 (verified on the pedal 2026-09-26). The shape without
+     * field 3 (`0B C0 08 01 2D <f32> 91 …`) is ignored: no ack, state field 56 unchanged. */
+    if (cap < 15 || bpm < 20.0f || bpm > 400.0f) return 0;
+    uint8_t f[4];
+    memcpy(f, &bpm, 4);
+    const uint8_t frame[15] = { 0x0D, 0xC0, 0x08, 0x01, 0x18, 0x01, 0x2D, f[0], f[1], f[2], f[3], 0x91, 0x00, 0x00, 0x00 };
+    memcpy(out, frame, 15);
+    return 15;
+}
+
+size_t nano_build_tempo_exit(uint8_t *out, size_t cap, float bpm)
+{
+    if (cap < 13 || bpm < 20.0f || bpm > 400.0f) return 0;
+    uint8_t f[4];
+    memcpy(f, &bpm, 4);
+    const uint8_t frame[13] = { 0x0B, 0xC0, 0x08, 0x01, 0x2D, f[0], f[1], f[2], f[3], 0x91, 0x00, 0x00, 0x00 };
+    memcpy(out, frame, 13);
+    return 13;
+}
+
 size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mute)
 {
     if (cap < 17 || reference_hz < 400.0f || reference_hz > 480.0f) return 0;

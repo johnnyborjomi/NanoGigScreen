@@ -90,6 +90,16 @@ size_t nano_build_fx_bypass(uint8_t *out, size_t cap, uint8_t fx_slot, bool enab
 /* Gate on/off: same frame with selector 9. */
 size_t nano_build_gate_bypass(uint8_t *out, size_t cap, bool enabled);
 
+/*
+ * Tempo set: `0D C0 08 01 18 01 2D <f32 BPM> 91 00 00 00`, the pedal's own per-tap message
+ * mirrored back (as the preset select mirrors 0x1D). Found by trial 2026-09-26: the pedal takes
+ * it silently (no ack), enters its tap tempo mode, and the next state dump's field 56 carries
+ * the new tempo. Without field 3 the tempo is not changed (see nano_build_tempo_exit).
+ */
+size_t nano_build_tempo_set(uint8_t *out, size_t cap, float bpm);
+/* Leave tap tempo mode: `0B C0 08 01 2D <f32 BPM> 91 00 00 00`, the pedal's own exit message mirrored back. */
+size_t nano_build_tempo_exit(uint8_t *out, size_t cap, float bpm);
+
 /* Tuner on: `0F C0 20 01 2D <f32 Hz> 30 01 38 <mute> 7F 00 00 00`. */
 size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mute);
 

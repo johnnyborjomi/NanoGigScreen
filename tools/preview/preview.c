@@ -78,6 +78,7 @@ static void noop(void) {}
 static void noop_fx(uint8_t s, bool on) { (void)s; (void)on; }
 static void noop_b(bool b) { (void)b; }
 static void noop_u8(uint8_t v) { (void)v; }
+static void noop_i(int v) { (void)v; }
 
 int main(int argc, char **argv)
 {
@@ -91,7 +92,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_link = noop_b, .on_bank_size = noop_u8 };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8 };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -176,6 +177,12 @@ int main(int argc, char **argv)
     nano_ui_set_tuner_mute(true);
     render(200);
     save(dir, "8-tuner-in-tune");
+
+    /* 8b. tempo view */
+    nano_ui_show(NANO_VIEW_TEMPO);
+    nano_ui_set_tempo(120.0f, false);
+    render(200);
+    save(dir, "8b-tempo");
 
     /* 9. medium name, 8 per bank */
     nano_ui_show(NANO_VIEW_MAIN);

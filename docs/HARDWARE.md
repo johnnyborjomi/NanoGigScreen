@@ -80,6 +80,25 @@ Seen values 60–186 BPM. The exit is sometimes followed by `08 C0 08 01 18 01 7
 sometimes by nothing, so the screen re-reads the state itself after the exit message; state
 field 56 then carries the same tempo.
 
+**Setting the tempo** (found by trial, verified 2026-09-26): write the per-tap shape to `c304`:
+
+```
+0D C0 08 01 18 01 2D <f32 BPM> 91 00 00 00
+```
+
+No ack; the pedal enters its tap tempo mode and the next state dump's field 56 has the new
+value. The screen sends it when its Tempo view opens (current tempo) and on − / +. Closing the
+view sends the pedal's exit shape `0B C0 08 01 2D <f32 BPM> 91 00 00 00` to leave the mode.
+
+## Pedal advertising (user's observation 2026-09-26)
+
+After a disconnect the Nano Cortex advertises only for a limited window (tens of seconds). While
+it is in tap tempo mode past that window it does not advertise at all, so a Connect from the
+screen finds nothing until the mode is left on the pedal. The screen's status line says so after
+30 s of scanning. A footswitch-started tuner and tap tempo mode are both announced to a connected
+client (tuner report 0x7F, tap message 0x91); a reconnect during tap tempo mode carries state
+field 60 = 1, which the screen uses to open the tempo view.
+
 ## Memory budget
 
 - Assembler buffer 20 KB (metadata dump ~17 KB), NVS metadata cache ~7 KB, LVGL draw buffers

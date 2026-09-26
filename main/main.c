@@ -26,6 +26,7 @@
 #include "nano_ble.h"
 #include "nano_decode.h"
 #include "nano_frame.h"
+#include "nano_proto.h"
 #include "nano_ui.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -47,7 +48,7 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
@@ -55,6 +56,7 @@ typedef struct {
     uint8_t fx_slot;
     bool fx_on;
     bool flag;      /* MSG_TUNER: on, MSG_LINK: connect */
+    int delta;      /* MSG_TEMPO_DELTA */
     uint8_t value;  /* MSG_BANK_SIZE */
     packet_t pkt;
 } app_msg_t;
@@ -82,6 +84,13 @@ static bool s_tuner_muted;          /* what we ask for / what the pedal last rep
 static bool s_tuner_view_ours;      /* the view was opened from the menu (we sent tuner-on) */
 /* Preset select in flight: the next tap builds on it, a dump that still shows the old preset does not undo it. */
 static int s_pending_preset = -1;
+/* Tempo edits are coalesced: instant UI, one write per 80 ms with the latest value, one confirming dump. */
+static float s_tempo_target;
+static bool s_tempo_dirty;
+static int64_t s_tempo_last_press_us, s_tempo_last_write_us;
+#define TEMPO_WRITE_GAP_US (80 * 1000)
+#define TEMPO_SETTLE_US (600 * 1000)
+static bool s_tempo_view_from_pedal; /* the pedal's tap tempo opened the view; its exit closes it */
 static int64_t s_pending_since_us;
 #define PENDING_PRESET_TIMEOUT_US (2500 * 1000)
 #define TUNER_SILENCE_US (600 * 1000)
@@ -167,6 +176,8 @@ static void ui_on_toggle_fx(uint8_t slot, bool on)
     xQueueSend(s_queue, &m, 0);
 }
 static void ui_on_toggle_gate(bool on) { app_msg_t m = { .kind = MSG_TOGGLE_GATE, .fx_on = on }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_tempo_view(bool open) { app_msg_t m = { .kind = MSG_TEMPO_VIEW, .flag = open }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_tempo_delta(int d) { app_msg_t m = { .kind = MSG_TEMPO_DELTA, .delta = d }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_tuner_mute(bool mute) { app_msg_t m = { .kind = MSG_TUNER_MUTE, .flag = mute }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_tuner(bool on) { app_msg_t m = { .kind = MSG_TUNER, .flag = on }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_link(bool connect) { app_msg_t m = { .kind = MSG_LINK, .flag = connect }; xQueueSend(s_queue, &m, 0); }
@@ -259,6 +270,75 @@ static void toggle_gate(bool currently_on)
     }
 }
 
+static bool tempo_edit_pending(void)
+{
+    return s_tempo_last_press_us && esp_timer_get_time() - s_tempo_last_press_us < TEMPO_SETTLE_US + 300 * 1000;
+}
+
+/* Tempo set by mirroring the pedal's 0x91 per-tap message (verified 2026-09-26); the state re-read confirms. */
+static void step_tempo(int delta)
+{
+    if (!s_link_ready || !s_state_valid || s_state.tempo_bpm <= 0) return;
+    float base = tempo_edit_pending() ? s_tempo_target : s_state.tempo_bpm;
+    float bpm = (float)((int)(base + 0.5f) + delta);
+    if (bpm < 40.0f) bpm = 40.0f;
+    if (bpm > 300.0f) bpm = 300.0f;
+    s_tempo_target = bpm;
+    s_tempo_dirty = true;
+    s_tempo_last_press_us = esp_timer_get_time();
+    s_state.tempo_bpm = bpm; /* optimistic; the dump's field 56 confirms */
+    if (lvgl_port_lock(20)) {
+        nano_ui_set_tempo(bpm, false);
+        lvgl_port_unlock();
+    }
+}
+
+/* Tempo view opened / closed on the screen: put the pedal in / out of its tap tempo mode. */
+static void set_tap_mode(bool on)
+{
+    if (!s_link_ready || !s_state_valid) return;
+    float bpm = s_state.tempo_bpm > 0 ? s_state.tempo_bpm : 120.0f;
+    uint8_t frame[15];
+    size_t n = on ? nano_build_tempo_set(frame, sizeof(frame), bpm) : nano_build_tempo_exit(frame, sizeof(frame), bpm);
+    if (n && nano_ble_write(frame, n) == 0) ESP_LOGI(TAG, "-> tap tempo mode %s (%.0f BPM)", on ? "on" : "off", bpm);
+    if (!on) schedule_state(CONFIRM_MS);
+}
+
+/* Called from the app loop: flush the latest target, then confirm once the presses have settled. */
+static void tempo_edit_tick(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_tempo_dirty && now - s_tempo_last_write_us >= TEMPO_WRITE_GAP_US && s_link_ready) {
+        uint8_t frame[15];
+        size_t n = nano_build_tempo_set(frame, sizeof(frame), s_tempo_target);
+        if (n && nano_ble_write(frame, n) == 0) ESP_LOGI(TAG, "-> tempo set %.0f", s_tempo_target);
+        s_tempo_dirty = false;
+        s_tempo_last_write_us = now;
+    }
+    if (!s_tempo_dirty && s_tempo_last_press_us && now - s_tempo_last_press_us >= TEMPO_SETTLE_US) {
+        s_tempo_last_press_us = 0;
+        schedule_state(0);
+    }
+}
+
+/* One line per dump with every top-level field, to compare dumps taken in different pedal modes. */
+static void log_state_fields(const uint8_t *body, size_t len)
+{
+    char line[400];
+    size_t k = 0;
+    nano_proto_iter_t it;
+    nano_field_t f;
+    nano_proto_iter_init(&it, body, len);
+    while (nano_proto_next(&it, &f) && k < sizeof(line) - 24) {
+        if (f.wire == NANO_WIRE_VARINT) k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%llu ", (unsigned)f.field, (unsigned long long)f.value);
+        else if (f.wire == NANO_WIRE_FIXED32) {
+            float v; memcpy(&v, f.raw, 4);
+            k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%.1ff ", (unsigned)f.field, v);
+        } else k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=[%u] ", (unsigned)f.field, (unsigned)f.len);
+    }
+    ESP_LOGI(TAG, "   fields: %s", line);
+}
+
 /* Tuner on `0F C0 20 01 2D <f32 Hz> 30 01 38 <mute> 7F 00 00 00` / off `06 C0 20 00 7F 00 00 00` (2026-09-19). */
 static void set_tuner(bool on)
 {
@@ -299,9 +379,10 @@ static void on_state(const nano_state_t *in)
             schedule_state(CONFIRM_MS);
         }
     }
+    if (tempo_edit_pending()) copy.tempo_bpm = s_tempo_target; /* a dump from before the last press */
     s_state = *st;
     s_state_valid = true;
-    ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\", IR \"%s\", fw %s", st->active_preset + 1, st->capture_name, st->ir_short_name, st->firmware);
+    ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\", IR \"%s\", %.0f BPM, fw %s", st->active_preset + 1, st->capture_name, st->ir_short_name, st->tempo_bpm, st->firmware);
     if (lvgl_port_lock(100)) {
         nano_ui_set_state(st, s_meta_valid ? &s_meta_blob.meta : NULL);
         nano_ui_set_stale(false);
@@ -339,6 +420,7 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         }
         nano_state_t st;
         if (nano_decode_state(body, len, &st)) {
+            log_state_fields(body, plen);
             on_state(&st);
             return;
         }
@@ -414,13 +496,24 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         }
         break;
     case NANO_EV_TAP_TEMPO:
-        /* Live tempo while tapping; on exit the pedal does not always send a change notice, so re-read. */
+        ESP_LOGI(TAG, "<- tap tempo %s: %.0f BPM", ev.tap_active ? "tap" : "exit", ev.tempo_bpm);
+        /* Live tempo while tapping; the first tap opens the tempo view, the pedal's exit closes it.
+         * On exit the pedal does not always send a change notice, so re-read. */
         s_state.tempo_bpm = ev.tempo_bpm;
         if (lvgl_port_lock(20)) {
+            if (ev.tap_active && nano_ui_view() != NANO_VIEW_TEMPO) {
+                nano_ui_open_tempo_from_pedal();
+                s_tempo_view_from_pedal = true;
+            }
             nano_ui_set_tempo(ev.tempo_bpm, ev.tap_active);
+            /* The pedal left the mode itself: close our view without echoing an exit back. */
+            if (!ev.tap_active && nano_ui_view() == NANO_VIEW_TEMPO) nano_ui_close_from_pedal();
             lvgl_port_unlock();
         }
-        if (!ev.tap_active) schedule_state(DEBOUNCE_MS);
+        if (!ev.tap_active) {
+            s_tempo_view_from_pedal = false;
+            schedule_state(DEBOUNCE_MS);
+        }
         break;
     case NANO_EV_EXPRESSION:
         break; /* not shown yet */
@@ -467,7 +560,7 @@ static void app_task(void *arg)
     (void)arg;
     app_msg_t m;
     for (;;) {
-        if (xQueueReceive(s_queue, &m, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (xQueueReceive(s_queue, &m, pdMS_TO_TICKS(20)) == pdTRUE) {
             switch (m.kind) {
             case MSG_PACKET:
                 if (!nano_is_tuner_pitch_packet(m.pkt.data, m.pkt.len)) ESP_LOGD(TAG, "<- %u B", m.pkt.len);
@@ -491,6 +584,13 @@ static void app_task(void *arg)
             case MSG_TOGGLE_GATE:
                 toggle_gate(m.fx_on);
                 break;
+            case MSG_TEMPO_DELTA:
+                step_tempo(m.delta);
+                break;
+            case MSG_TEMPO_VIEW:
+                s_tempo_view_from_pedal = false;
+                set_tap_mode(m.flag);
+                break;
             case MSG_TUNER_MUTE:
                 s_tuner_muted = m.flag;
                 if (lvgl_port_lock(50)) {
@@ -513,6 +613,7 @@ static void app_task(void *arg)
             }
         }
         nano_assembler_tick(&s_asm, now_ms());
+        tempo_edit_tick();
         if (s_link_ready && s_state_due_us && esp_timer_get_time() >= s_state_due_us) request_state();
         if (!s_tuner_cleared && esp_timer_get_time() - s_last_pitch_us > TUNER_SILENCE_US) {
             s_tuner_cleared = true;
@@ -541,7 +642,7 @@ void app_main(void)
     nano_ui_callbacks_t ui_cb = {
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
-        .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute,
+        .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
     };
     if (lvgl_port_lock(0)) {
         nano_ui_create(disp, &ui_cb);

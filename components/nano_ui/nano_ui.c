@@ -46,7 +46,10 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define TILE_H 60
 
 static nano_ui_callbacks_t s_cb;
-static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner;
+static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view;
+static lv_obj_t *s_tempo_big, *s_tempo_hint;
+static float s_tempo_bpm;
+static bool s_tempo_tapping;
 static nano_view_t s_view = NANO_VIEW_MAIN;
 
 /* main view */
@@ -172,6 +175,12 @@ static void on_close(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_MAIN); }
 static void on_open_settings(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_SETTINGS); }
 static void on_open_tuner(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_TUNER); }
 static void on_back_to_menu(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_MENU); }
+static void on_open_tempo(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_TEMPO); }
+static void on_tempo_step(lv_event_t *e)
+{
+    int delta = (int)(intptr_t)lv_event_get_user_data(e);
+    if (s_cb.on_tempo_delta) s_cb.on_tempo_delta(delta);
+}
 
 static void on_link_toggle(lv_event_t *e)
 {
@@ -331,7 +340,7 @@ static void build_menu(lv_obj_t *scr)
     menu_item(s_menu, 0, LV_SYMBOL_AUDIO "  Tuner", on_open_tuner, NULL);
     menu_item(s_menu, 1, LV_SYMBOL_SETTINGS "  Settings", on_open_settings, NULL);
     menu_item(s_menu, 2, LV_SYMBOL_BLUETOOTH "  Disconnect", on_link_toggle, &s_link_btn_label);
-    menu_item(s_menu, 3, "Close", on_close, NULL);
+    menu_item(s_menu, 3, LV_SYMBOL_LOOP "  Tempo", on_open_tempo, NULL);
 }
 
 static void build_settings(lv_obj_t *scr)
@@ -390,6 +399,57 @@ static void build_tuner(lv_obj_t *scr)
     lv_obj_add_event_cb(done, on_pressed, LV_EVENT_PRESSED, NULL);
 }
 
+static void build_tempo(lv_obj_t *scr)
+{
+    s_tempo_view = make_overlay(scr, "Tempo");
+    s_tempo_big = make_label(s_tempo_view, &lv_font_montserrat_40, C_ON);
+    lv_obj_set_width(s_tempo_big, SCREEN_W);
+    lv_obj_set_style_text_align(s_tempo_big, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_tempo_big, 0, 44);
+    lv_label_set_text(s_tempo_big, "-");
+    lv_obj_t *unit = make_label(s_tempo_view, &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_width(unit, SCREEN_W);
+    lv_obj_set_style_text_align(unit, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(unit, 0, 92);
+    lv_label_set_text(unit, "BPM");
+    s_tempo_hint = make_label(s_tempo_view, &lv_font_montserrat_12, C_MUTED);
+    lv_obj_set_width(s_tempo_hint, SCREEN_W);
+    lv_obj_set_style_text_align(s_tempo_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_tempo_hint, 0, 112);
+    lv_label_set_text(s_tempo_hint, "");
+    /* Step on the press itself (not the release) and auto-repeat while held. */
+    lv_obj_t *minus = make_button(s_tempo_view, 12, 134, 140, 48, LV_SYMBOL_MINUS, &lv_font_montserrat_20, C_PANEL, C_TEXT, on_pressed, NULL);
+    lv_obj_remove_event_cb(minus, on_pressed);
+    lv_obj_add_event_cb(minus, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(minus, on_tempo_step, LV_EVENT_PRESSED, (void *)(intptr_t)-1);
+    lv_obj_add_event_cb(minus, on_tempo_step, LV_EVENT_LONG_PRESSED_REPEAT, (void *)(intptr_t)-1);
+    lv_obj_t *plus = make_button(s_tempo_view, SCREEN_W - 12 - 140, 134, 140, 48, LV_SYMBOL_PLUS, &lv_font_montserrat_20, C_PANEL, C_TEXT, on_pressed, NULL);
+    lv_obj_remove_event_cb(plus, on_pressed);
+    lv_obj_add_event_cb(plus, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(plus, on_tempo_step, LV_EVENT_PRESSED, (void *)(intptr_t)1);
+    lv_obj_add_event_cb(plus, on_tempo_step, LV_EVENT_LONG_PRESSED_REPEAT, (void *)(intptr_t)1);
+    lv_obj_t *done = make_button(s_tempo_view, 12, SCREEN_H - 50, SCREEN_W - 24, 40, "Done", &lv_font_montserrat_20, C_PANEL, C_TEXT, on_close, NULL);
+    lv_obj_add_event_cb(done, on_pressed, LV_EVENT_PRESSED, NULL);
+}
+
+static void refresh_tempo_views(void)
+{
+    if (s_tempo_bpm <= 0) {
+        lv_label_set_text(s_tempo, "");
+        lv_label_set_text(s_tempo_big, "-");
+        return;
+    }
+    char t[20];
+    snprintf(t, sizeof(t), s_tempo_tapping ? "TAP %d" : "%d BPM", (int)(s_tempo_bpm + 0.5f));
+    lv_label_set_text(s_tempo, t);
+    uint32_t c = s_tempo_tapping ? C_WARN : C_ON;
+    lv_obj_set_style_text_color(s_tempo, lv_color_hex(c), 0);
+    snprintf(t, sizeof(t), "%d", (int)(s_tempo_bpm + 0.5f));
+    lv_label_set_text(s_tempo_big, t);
+    lv_obj_set_style_text_color(s_tempo_big, lv_color_hex(c), 0);
+    lv_label_set_text(s_tempo_hint, s_tempo_tapping ? "Tap tempo on the pedal" : "");
+}
+
 /* ---- public --------------------------------------------------------------- */
 
 void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb)
@@ -403,6 +463,7 @@ void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb)
     build_menu(scr);
     build_settings(scr);
     build_tuner(scr);
+    build_tempo(scr);
     nano_ui_set_link_enabled(true);
 }
 
@@ -410,14 +471,27 @@ static void show_view(nano_view_t view, bool notify)
 {
     if (view == s_view) return;
     if (s_view == NANO_VIEW_TUNER && notify && s_cb.on_tuner) s_cb.on_tuner(false);
+    if (s_view == NANO_VIEW_TEMPO && notify && s_cb.on_tempo_view) s_cb.on_tempo_view(false);
     s_view = view;
     lv_obj_set_hidden(s_menu, view != NANO_VIEW_MENU);
     lv_obj_set_hidden(s_settings, view != NANO_VIEW_SETTINGS);
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
+    lv_obj_set_hidden(s_tempo_view, view != NANO_VIEW_TEMPO);
     if (view == NANO_VIEW_TUNER) {
         nano_ui_set_tuner(NULL, 0, false);
         if (notify && s_cb.on_tuner) s_cb.on_tuner(true);
     }
+    if (view == NANO_VIEW_TEMPO && notify && s_cb.on_tempo_view) s_cb.on_tempo_view(true);
+}
+
+void nano_ui_open_tempo_from_pedal(void)
+{
+    show_view(NANO_VIEW_TEMPO, false);
+}
+
+void nano_ui_close_from_pedal(void)
+{
+    show_view(NANO_VIEW_MAIN, false);
 }
 
 void nano_ui_show(nano_view_t view)
@@ -580,14 +654,9 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
 
 void nano_ui_set_tempo(float bpm, bool tapping)
 {
-    if (bpm <= 0) {
-        lv_label_set_text(s_tempo, "");
-        return;
-    }
-    char t[20];
-    snprintf(t, sizeof(t), tapping ? "TAP %d" : "%d BPM", (int)(bpm + 0.5f));
-    lv_label_set_text(s_tempo, t);
-    lv_obj_set_style_text_color(s_tempo, lv_color_hex(tapping ? C_WARN : C_ON), 0);
+    s_tempo_bpm = bpm;
+    s_tempo_tapping = tapping;
+    refresh_tempo_views();
 }
 
 void nano_ui_set_stale(bool stale)

@@ -65,6 +65,7 @@ static void start_scan(void)
         .window = 0,
     };
     int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &p, gap_event, NULL);
+    ESP_LOGI(TAG, "scan start rc=%d (active=%d)", rc, ble_gap_disc_active());
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGE(TAG, "ble_gap_disc rc=%d", rc);
         set_status(NANO_BLE_IDLE, "scan failed");
@@ -244,6 +245,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         start_scan();
         return 0;
     case BLE_GAP_EVENT_DISC_COMPLETE:
+        ESP_LOGI(TAG, "scan complete, reason %d", event->disc_complete.reason);
         if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE && s_status == NANO_BLE_SCANNING) start_scan();
         return 0;
     case BLE_GAP_EVENT_MTU:
@@ -323,9 +325,11 @@ void nano_ble_set_enabled(bool enabled)
         return;
     }
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM); /* DISCONNECT event follows */
+        int rc = ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM); /* DISCONNECT event follows */
+        ESP_LOGI(TAG, "terminate rc=%d", rc);
     } else {
-        ble_gap_disc_cancel();
+        int rc = ble_gap_disc_cancel();
+        ESP_LOGI(TAG, "scan cancel rc=%d", rc);
         set_status(NANO_BLE_IDLE, "Disconnected");
     }
 }

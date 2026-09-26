@@ -26,6 +26,7 @@ typedef enum {
     NANO_VIEW_MENU,
     NANO_VIEW_SETTINGS,
     NANO_VIEW_TUNER,
+    NANO_VIEW_TEMPO,
 } nano_view_t;
 
 typedef struct {
@@ -43,6 +44,10 @@ typedef struct {
     void (*on_link)(bool connect);
     /* Settings changed the presets-per-bank count (2..8). */
     void (*on_bank_size)(uint8_t per_bank);
+    /* Tempo view: - / + pressed (delta in BPM). */
+    void (*on_tempo_delta)(int delta);
+    /* Tempo view opened (true) / closed (false) from the screen: the app puts the pedal in / out of tap tempo mode. */
+    void (*on_tempo_view)(bool open);
 } nano_ui_callbacks_t;
 
 void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb);
@@ -69,6 +74,10 @@ nano_view_t nano_ui_view(void);
 void nano_ui_set_tuner(const char *note, float cents, bool in_tune);
 /* The pedal's tuner started on the pedal itself: show the view without sending tuner-on. */
 void nano_ui_open_tuner_from_pedal(void);
+/* The pedal entered tap tempo mode itself: show the tempo view without sending anything. */
+void nano_ui_open_tempo_from_pedal(void);
+/* The pedal left a mode itself: back to the main view without sending anything. */
+void nano_ui_close_from_pedal(void);
 /* Mute state as the pedal reports it (tuner report field 7). */
 void nano_ui_set_tuner_mute(bool muted);
 
