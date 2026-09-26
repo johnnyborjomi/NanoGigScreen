@@ -96,7 +96,9 @@ After a disconnect the Nano Cortex advertises only for a limited window (tens of
 it is in tap tempo mode past that window it does not advertise at all, so a Connect from the
 screen finds nothing until the mode is left on the pedal. The screen's status line says so after
 30 s of scanning. A footswitch-started tuner and tap tempo mode are both announced to a connected
-client (tuner report 0x7F, tap message 0x91); a reconnect during tap tempo mode carries state
+client (tuner report 0x7F, tap message 0x91); the pedal answers our own tuner-on with the same
+report within ~65 ms and sends nothing at all after our tuner-off (capture 2026-09-27), so every
+on-report with the view closed is a footswitch start; only pitch readings can trail an off; a reconnect during tap tempo mode carries state
 field 60 = 1, which the screen uses to open the tempo view.
 
 ## Memory budget

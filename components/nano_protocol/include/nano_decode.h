@@ -96,6 +96,8 @@ typedef struct {
     float tempo_bpm;           /* TAP_TEMPO: field 5 */
     float reference_hz;        /* TUNER_ACK, 0 when absent */
     bool outputs_muted;        /* SETTINGS field 16 (absent = outputs on) */
+    uint8_t selector;          /* CONTROL from 0x1C: field 3 (1 capture bypass, 3 cab / IR slot, 4 capture slot), 0 when absent */
+    int32_t value;             /* CONTROL from 0x1C: field 4, -1 when absent */
 } nano_event_t;
 
 /* Decode a single-packet live message (full packet including the 2-byte header). */

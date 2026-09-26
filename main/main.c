@@ -37,6 +37,8 @@ static const char *TAG = "nanogig";
 #define PACKET_QUEUE_LEN 12
 #define ASSEMBLER_CAP (20 * 1024)   /* the metadata dump is ~17 KB */
 #define DEBOUNCE_MS 400
+#define ENCODER_DEBOUNCE_MS 120     /* capture / IR scrolling: the name is shown from the cache at once, the dump confirms */
+#define TUNER_OFF_GRACE_US (900 * 1000)   /* pitch readings still in flight after our tuner-off must not reopen the view */
 #define CONFIRM_MS 300
 #define NVS_NAMESPACE "nanogig"
 #define NVS_KEY_META "meta"
@@ -80,10 +82,15 @@ static bool s_state_valid;
 static bool s_meta_requested_this_link;
 static int64_t s_state_due_us;      /* 0 = no pending re-read */
 static int64_t s_state_sent_us;     /* when the last state request went out */
+/* Every state request's send time, oldest first: a dump answers the oldest one, so we know how old it is. */
+#define REQ_FIFO_LEN 8
+static int64_t s_req_fifo[REQ_FIFO_LEN];
+static int s_req_head, s_req_count;
 static int64_t s_last_pitch_us;     /* last tuner reading; the tuner view clears after silence */
 static bool s_tuner_cleared = true;
 static bool s_tuner_muted;          /* what we ask for / what the pedal last reported */
 static bool s_tuner_view_ours;      /* the view was opened from the menu (we sent tuner-on) */
+static int64_t s_tuner_off_us;      /* when we last sent tuner-off */
 /* Preset select in flight: the next tap builds on it, a dump that still shows the old preset does not undo it. */
 static int s_pending_preset = -1;
 /* Tempo edits are coalesced: instant UI, one write per 80 ms with the latest value, one confirming dump. */
@@ -95,6 +102,14 @@ static int64_t s_tempo_last_press_us, s_tempo_last_write_us;
 static bool s_tempo_view_from_pedal; /* the pedal's tap tempo opened the view; its exit closes it */
 static int64_t s_pending_since_us;
 #define PENDING_PRESET_TIMEOUT_US (2500 * 1000)
+/* Rapid taps are coalesced: one select in flight at a time, the latest target goes out on its ack. */
+static bool s_select_inflight;
+static int s_select_sent = -1;      /* the target the in-flight select carries */
+static int64_t s_select_sent_us, s_select_last_us;
+#define SELECT_ACK_TIMEOUT_US (400 * 1000)
+#define SELECT_SETTLE_US (1500 * 1000) /* no metadata re-check this soon after a select: the pedal may still be loading */
+/* Per-tile optimistic state: a dump requested before the tile's last write cannot undo the tap. */
+static int64_t s_fx_written_us[NANO_FX_SLOT_COUNT], s_gate_written_us;
 #define TUNER_SILENCE_US (600 * 1000)
 #define STATE_MIN_GAP_US (200 * 1000) /* a select's ack events also ask; one dump is enough */
 static bool s_link_ready;
@@ -207,9 +222,25 @@ static void request_state(void)
 {
     s_state_due_us = 0;
     int64_t now = esp_timer_get_time();
-    if (now - s_state_sent_us < STATE_MIN_GAP_US) return;
+    if (now - s_state_sent_us < STATE_MIN_GAP_US) {
+        s_state_due_us = s_state_sent_us + STATE_MIN_GAP_US; /* not dropped: retried at the end of the gap */
+        return;
+    }
     s_state_sent_us = now;
-    if (nano_ble_write(NANO_REQ_STATE, sizeof(NANO_REQ_STATE)) == 0) ESP_LOGI(TAG, "-> state request");
+    if (nano_ble_write(NANO_REQ_STATE, sizeof(NANO_REQ_STATE)) == 0) {
+        ESP_LOGI(TAG, "-> state request");
+        if (s_req_count < REQ_FIFO_LEN) s_req_fifo[(s_req_head + s_req_count++) % REQ_FIFO_LEN] = now;
+    }
+}
+
+/* Send time of the request the arriving dump answers (the oldest outstanding one). */
+static int64_t pop_request_time(void)
+{
+    if (s_req_count == 0) return s_state_sent_us;
+    int64_t t = s_req_fifo[s_req_head];
+    s_req_head = (s_req_head + 1) % REQ_FIFO_LEN;
+    s_req_count--;
+    return t;
 }
 
 static void request_metadata(void)
@@ -258,24 +289,43 @@ static bool pending_preset_active(void)
     return true;
 }
 
+static void send_select(int idx)
+{
+    uint8_t frame[NANO_PRESET_SELECT_LEN];
+    size_t n = nano_build_preset_select(frame, sizeof(frame), (uint8_t)idx);
+    if (n && nano_ble_write(frame, n) == 0) {
+        ESP_LOGI(TAG, "-> preset select %d", idx + 1);
+        s_select_inflight = true;
+        s_select_sent = idx;
+        s_select_sent_us = s_select_last_us = esp_timer_get_time();
+    }
+}
+
+/* The in-flight select was acked (or timed out): send the latest target if it moved on, else confirm. */
+static void select_settled(void)
+{
+    if (!s_select_inflight) return;
+    s_select_inflight = false;
+    if (pending_preset_active() && s_pending_preset != s_select_sent) send_select(s_pending_preset);
+    else schedule_state(0);
+}
+
+/* Show the target at once; send it now, or hold it while an earlier select is still unacked
+ * (the pedal would load every preset skipped past, ~150 ms each). */
 static void select_preset(int delta)
 {
     if (!s_link_ready) return;
     int base = pending_preset_active() ? s_pending_preset : (s_state_valid ? s_state.active_preset : 0);
     int idx = (base + delta + NANO_PRESET_COUNT) % NANO_PRESET_COUNT;
-    uint8_t frame[NANO_PRESET_SELECT_LEN];
-    size_t n = nano_build_preset_select(frame, sizeof(frame), (uint8_t)idx);
-    if (n && nano_ble_write(frame, n) == 0) {
-        ESP_LOGI(TAG, "-> preset select %d", idx + 1);
-        s_pending_preset = idx;
-        s_pending_since_us = esp_timer_get_time();
-        s_state.active_preset = (uint8_t)idx; /* optimistic; the dump confirms */
-        if (lvgl_port_lock(50)) {
-            nano_ui_set_preset((uint8_t)idx, s_meta_valid ? &s_meta_blob.meta : NULL);
-            lvgl_port_unlock();
-        }
-        schedule_state(CONFIRM_MS);
+    s_pending_preset = idx;
+    s_pending_since_us = esp_timer_get_time();
+    s_state.active_preset = (uint8_t)idx; /* optimistic; the dump confirms */
+    if (lvgl_port_lock(50)) {
+        nano_ui_set_preset((uint8_t)idx, s_meta_valid ? &s_meta_blob.meta : NULL);
+        lvgl_port_unlock();
     }
+    if (!s_select_inflight) send_select(idx);
+    else ESP_LOGI(TAG, "   preset %d held until the ack", idx + 1);
 }
 
 /* FX block on/off: `0A C0 08 01 18 <slot 4..8> 20 <0 on / 1 off> 1F 00 00 00` (verified 2026-09-12). */
@@ -286,7 +336,8 @@ static void toggle_fx(uint8_t slot, bool currently_on)
     size_t n = nano_build_fx_bypass(frame, sizeof(frame), slot, !currently_on);
     if (n && nano_ble_write(frame, n) == 0) {
         ESP_LOGI(TAG, "-> fx slot %u %s", slot, currently_on ? "off" : "on");
-        s_state.fx_on[slot] = !currently_on; /* optimistic; the dump confirms */
+        s_state.fx_on[slot] = !currently_on; /* optimistic; a dump requested after this write confirms */
+        s_fx_written_us[slot] = esp_timer_get_time();
         if (lvgl_port_lock(50)) {
             nano_ui_set_state(&s_state, s_meta_valid ? &s_meta_blob.meta : NULL);
             lvgl_port_unlock();
@@ -304,6 +355,7 @@ static void toggle_gate(bool currently_on)
     if (n && nano_ble_write(frame, n) == 0) {
         ESP_LOGI(TAG, "-> gate %s", currently_on ? "off" : "on");
         s_state.gate_on = !currently_on;
+        s_gate_written_us = esp_timer_get_time();
         if (lvgl_port_lock(50)) {
             nano_ui_set_state(&s_state, s_meta_valid ? &s_meta_blob.meta : NULL);
             lvgl_port_unlock();
@@ -395,21 +447,24 @@ static void set_tuner(bool on)
     } else if (nano_ble_write(NANO_REQ_TUNER_OFF, sizeof(NANO_REQ_TUNER_OFF)) == 0) {
         ESP_LOGI(TAG, "-> tuner off");
         s_tuner_view_ours = false;
+        s_tuner_off_us = esp_timer_get_time();
     }
 }
 
 /* ---- message handling ----------------------------------------------------- */
 
-static bool cache_contradicts_state(void)
+/* Compare the dump's own preset against its cache record (never a pending target against another preset's names). */
+static bool cache_contradicts_state(const nano_state_t *in)
 {
     if (!s_meta_valid) return true;
-    const nano_preset_record_t *p = &s_meta_blob.meta.presets[s_state.active_preset];
-    if (!p->name[0] && !p->capture_name[0]) return s_state.capture_name[0] != 0; /* empty slot on both sides is fine */
-    return strcmp(p->capture_name, s_state.capture_name) != 0;
+    const nano_preset_record_t *p = &s_meta_blob.meta.presets[in->active_preset];
+    if (!p->name[0] && !p->capture_name[0]) return in->capture_name[0] != 0; /* empty slot on both sides is fine */
+    return strcmp(p->capture_name, in->capture_name) != 0;
 }
 
 static void on_state(const nano_state_t *in)
 {
+    int64_t requested_us = pop_request_time();
     nano_state_t copy = *in;
     const nano_state_t *st = &copy;
     if (pending_preset_active()) {
@@ -422,6 +477,13 @@ static void on_state(const nano_state_t *in)
         }
     }
     if (tempo_edit_pending()) copy.tempo_bpm = s_tempo_target; /* a dump from before the last press */
+    /* Tiles written after this dump was requested keep their tapped state; one more dump confirms them. */
+    bool stale_tile = false;
+    for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) {
+        if (s_fx_written_us[i] > requested_us) { copy.fx_on[i] = s_state.fx_on[i]; stale_tile = true; }
+    }
+    if (s_gate_written_us > requested_us) { copy.gate_on = s_state.gate_on; stale_tile = true; }
+    if (stale_tile) schedule_state(CONFIRM_MS);
     s_state = *st;
     s_state_valid = true;
     ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\", IR \"%s\", %.0f BPM, fw %s", st->active_preset + 1, st->capture_name, st->ir_short_name, st->tempo_bpm, st->firmware);
@@ -431,7 +493,8 @@ static void on_state(const nano_state_t *in)
         nano_ui_set_connected(true); /* the connect page closes only once the pedal's state is on screen */
         lvgl_port_unlock();
     }
-    if (!s_meta_requested_this_link && cache_contradicts_state()) request_metadata();
+    bool switching = pending_preset_active() || s_select_inflight || esp_timer_get_time() - s_select_last_us < SELECT_SETTLE_US;
+    if (!s_meta_requested_this_link && !switching && cache_contradicts_state(in)) request_metadata();
     else if (!s_settings_read_this_link && !s_settings_due_us) schedule_settings(SETTINGS_READ_DELAY_MS);
 }
 
@@ -501,15 +564,50 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         schedule_state(0);
         break;
     case NANO_EV_PRESET_SELECT_ACK:
-        schedule_state(0);
+        if (s_select_inflight) select_settled();
+        else schedule_state(0);
         break;
     case NANO_EV_BYPASS_CHANGED:
+        /* The pedal's "changed" notice after our select comes ~50 ms before its ack: read the state now
+         * (unless a newer target is waiting, which goes out on the ack). */
+        if (s_select_inflight && s_pending_preset == s_select_sent) schedule_state(0);
+        else if (!s_select_inflight) schedule_state(DEBOUNCE_MS);
+        break;
     case NANO_EV_CONTROL:
-        schedule_state(DEBOUNCE_MS);
+        if (ev.msg_type == NANO_MSG_ENCODER && ev.value >= 0 && s_state_valid) {
+            /* Capture / IR scrolled on the pedal: show the cached name now, confirm with a quick dump. */
+            const nano_metadata_t *meta = s_meta_valid ? &s_meta_blob.meta : NULL;
+            bool shown = false;
+            if (ev.selector == 4 && meta && ev.value < NANO_CAPTURE_SLOTS && meta->captures[ev.value][0]) {
+                strncpy(s_state.capture_name, meta->captures[ev.value], sizeof(s_state.capture_name) - 1);
+                s_state.capture_on = true;
+                shown = true;
+            } else if (ev.selector == 3 && meta && ev.value >= 1 && ev.value <= NANO_IR_SLOTS && meta->irs[ev.value - 1][0]) {
+                strncpy(s_state.ir_short_name, meta->irs[ev.value - 1], sizeof(s_state.ir_short_name) - 1);
+                s_state.cab_on = true;
+                shown = true;
+            } else if (ev.selector == 3 && ev.value == 0) {
+                s_state.cab_on = false;
+                shown = true;
+            } else if (ev.selector == 1 && ev.value == 0) {
+                s_state.capture_on = false;
+                shown = true;
+            }
+            ESP_LOGI(TAG, "<- encoder sel %u val %d%s", (unsigned)ev.selector, (int)ev.value, shown ? " (shown from cache)" : "");
+            if (shown && lvgl_port_lock(50)) {
+                nano_ui_set_state(&s_state, meta);
+                lvgl_port_unlock();
+            }
+            schedule_state(ENCODER_DEBOUNCE_MS);
+        } else {
+            schedule_state(DEBOUNCE_MS);
+        }
         break;
     case NANO_EV_TUNER_PITCH:
         s_last_pitch_us = esp_timer_get_time();
         s_tuner_cleared = false;
+        /* Readings still streaming right after our tuner-off are not a pedal-started tuner. */
+        if (nano_ui_view() != NANO_VIEW_TUNER && s_last_pitch_us - s_tuner_off_us < TUNER_OFF_GRACE_US) break;
         if (lvgl_port_lock(20)) {
             if (nano_ui_view() != NANO_VIEW_TUNER) {
                 /* Readings with our view closed: the tuner was started on the pedal. Follow it. */
@@ -526,16 +624,17 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         if (lvgl_port_lock(50)) {
             if (ev.tuner_on) {
                 if (nano_ui_view() != NANO_VIEW_TUNER) {
+                    /* A footswitch-started tuner (the pedal answers our own tuner-on within ~65 ms, and sends
+                     * nothing after our tuner-off, capture 2026-09-27), so every on-report is genuine. */
                     nano_ui_open_tuner_from_pedal();
                     s_tuner_view_ours = false;
                 }
                 s_tuner_muted = ev.tuner_muted;
                 nano_ui_set_tuner_mute(ev.tuner_muted);
             } else if (nano_ui_view() == NANO_VIEW_TUNER) {
-                /* The pedal ended its tuner (footswitch): close the view; nano_ui_show would send tuner-off. */
+                /* The pedal ended its tuner (footswitch): close the view without echoing a tuner-off back. */
                 s_tuner_view_ours = false;
-                nano_ui_open_tuner_from_pedal(); /* no-op if already open; keeps the API symmetrical */
-                nano_ui_show(NANO_VIEW_MAIN);
+                nano_ui_close_from_pedal();
             }
             lvgl_port_unlock();
         }
@@ -585,6 +684,9 @@ static void on_status(nano_ble_status_t status, const char *detail)
     if (ready && !s_link_ready) {
         s_link_ready = true;
         s_meta_requested_this_link = false;
+        s_req_head = s_req_count = 0;
+        s_select_inflight = false;
+        s_pending_preset = -1;
         s_settings_read_this_link = false;
         s_settings_due_us = 0;
         nano_assembler_reset(&s_asm);
@@ -685,6 +787,10 @@ static void app_task(void *arg)
         }
         nano_assembler_tick(&s_asm, now_ms());
         tempo_edit_tick();
+        if (s_select_inflight && esp_timer_get_time() - s_select_sent_us > SELECT_ACK_TIMEOUT_US) {
+            ESP_LOGW(TAG, "preset select ack timed out");
+            select_settled();
+        }
         if (s_link_ready && s_state_due_us && esp_timer_get_time() >= s_state_due_us) request_state();
         if (s_link_ready && s_settings_due_us && esp_timer_get_time() >= s_settings_due_us) request_settings();
         if (!s_tuner_cleared && esp_timer_get_time() - s_last_pitch_us > TUNER_SILENCE_US) {

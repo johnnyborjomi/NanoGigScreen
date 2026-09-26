@@ -188,10 +188,19 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
     case NANO_MSG_PRESET_SELECT_ACK:
         out->kind = NANO_EV_PRESET_SELECT_ACK;
         return;
+    case NANO_MSG_ENCODER: {
+        /* `18 <sel> 20 <val> 1C`: the same shape as the slot writes, sent when the encoder scrolls captures / IRs. */
+        out->kind = NANO_EV_CONTROL;
+        int64_t sel = nano_first_varint(body, plen, 3, 0);
+        int64_t val = nano_first_varint(body, plen, 4, -1);
+        out->selector = sel >= 0 && sel < 256 ? (uint8_t)sel : 0;
+        out->value = val >= 0 && val < 1000 ? (int32_t)val : -1;
+        return;
+    }
     case NANO_MSG_KNOB:
-    case NANO_MSG_ENCODER:
     case NANO_MSG_CHANGED:
         out->kind = NANO_EV_CONTROL;
+        out->value = -1;
         return;
     case NANO_MSG_EXPRESSION: {
         int64_t pos = nano_first_varint(body, plen, 4, 0); /* absent at heel */
