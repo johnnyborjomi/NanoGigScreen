@@ -134,6 +134,12 @@ int main(int argc, char **argv)
     render(200);
     save(dir, "2-long-name");
 
+    /* 2a. tap tempo in progress */
+    nano_ui_set_tempo(135.0f, true);
+    render(200);
+    save(dir, "2a-tap-tempo");
+    nano_ui_set_tempo(120.0f, false);
+
     /* 2b. every switch on this preset (worst case for the label column) */
     {
         uint8_t all[4] = { st.active_preset, st.active_preset, st.active_preset, st.active_preset };

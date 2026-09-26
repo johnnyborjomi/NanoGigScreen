@@ -77,6 +77,7 @@ typedef enum {
     NANO_EV_TUNER_PITCH,       /* note, cents, in tune */
     NANO_EV_TUNER_ACK,         /* on/off + reference */
     NANO_EV_SETTINGS,
+    NANO_EV_TAP_TEMPO,         /* tempo while tapping / when the tap tempo mode ends (2026-09-26) */
 } nano_event_kind_t;
 
 typedef struct {
@@ -90,6 +91,8 @@ typedef struct {
     bool in_tune;              /* TUNER_PITCH */
     bool tuner_on;             /* TUNER_ACK */
     bool tuner_muted;          /* TUNER_ACK field 7 (absent = 0 = outputs on) */
+    bool tap_active;           /* TAP_TEMPO: field 3 = 1 while the mode is on; absent when it just ended */
+    float tempo_bpm;           /* TAP_TEMPO: field 5 */
     float reference_hz;        /* TUNER_ACK, 0 when absent */
 } nano_event_t;
 

@@ -66,6 +66,20 @@ The firmware lights the LED red while scanning, blue while connecting, off when 
   (`swap_xy` + `mirror_x`, i.e. `CYD_ROTATE_180=n`).
 - Community reference clone: `~/projects/CYD-reference/ESP32-Cheap-Yellow-Display`.
 
+## Protocol finding: tap tempo (2026-09-26)
+
+Not in NanoGig's PROTOCOL.md yet. Hold the left footswitch to enter tap tempo, tap, hold again to
+leave. Every tap sends a type `0x91` message with the current tempo:
+
+```
+0D C0 08 01 18 01 2D <f32 BPM> 91 00 00 00     field 3 = 1 (mode on), field 5 = BPM
+0B C0 08 01 2D <f32 BPM> 91 00 00 00           leaving the mode: field 3 absent, final BPM
+```
+
+Seen values 60–186 BPM. The exit is sometimes followed by `08 C0 08 01 18 01 73 00 00 00` and
+sometimes by nothing, so the screen re-reads the state itself after the exit message; state
+field 56 then carries the same tempo.
+
 ## Memory budget
 
 - Assembler buffer 20 KB (metadata dump ~17 KB), NVS metadata cache ~7 KB, LVGL draw buffers

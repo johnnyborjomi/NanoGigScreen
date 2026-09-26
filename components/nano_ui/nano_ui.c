@@ -550,13 +550,7 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
     s_gate_on = st->gate_on;
     lv_obj_set_style_bg_color(s_gate, lv_color_hex(st->gate_on ? nano_category_color(NANO_CAT_UTILITY) : C_OFF), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(s_gate, 0), lv_color_hex(st->gate_on ? C_FX_TEXT : C_TEXT), 0);
-    if (st->tempo_bpm > 0) {
-        char t[16];
-        snprintf(t, sizeof(t), "%d BPM", (int)(st->tempo_bpm + 0.5f));
-        lv_label_set_text(s_tempo, t);
-    } else {
-        lv_label_set_text(s_tempo, "");
-    }
+    nano_ui_set_tempo(st->tempo_bpm, false);
     for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) {
         const nano_fx_slot_t *fx = &st->fx[i];
         bool present = fx->id[0] != 0;
@@ -582,6 +576,18 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
             lv_obj_set_style_text_color(s_tile_names[i], lv_color_hex(C_TEXT), 0);
         }
     }
+}
+
+void nano_ui_set_tempo(float bpm, bool tapping)
+{
+    if (bpm <= 0) {
+        lv_label_set_text(s_tempo, "");
+        return;
+    }
+    char t[20];
+    snprintf(t, sizeof(t), tapping ? "TAP %d" : "%d BPM", (int)(bpm + 0.5f));
+    lv_label_set_text(s_tempo, t);
+    lv_obj_set_style_text_color(s_tempo, lv_color_hex(tapping ? C_WARN : C_ON), 0);
 }
 
 void nano_ui_set_stale(bool stale)

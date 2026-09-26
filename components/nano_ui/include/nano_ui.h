@@ -58,6 +58,8 @@ void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta);
 void nano_ui_set_footswitches(const uint8_t fs[4]);
 /* Full refresh from a state dump plus cached metadata (meta may be NULL). */
 void nano_ui_set_state(const nano_state_t *state, const nano_metadata_t *meta);
+/* Tempo line: `tapping` = the pedal is in tap tempo mode (highlighted). 0 BPM clears it. */
+void nano_ui_set_tempo(float bpm, bool tapping);
 /* Grey everything out while there is no link. */
 void nano_ui_set_stale(bool stale);
 /* Switch views (the tuner view calls on_tuner on open / close). */

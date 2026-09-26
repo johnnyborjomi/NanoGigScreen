@@ -58,6 +58,7 @@ enum {
     NANO_MSG_CHANGED = 0x73,         /* generic "something changed" */
     NANO_MSG_TUNER = 0x7f,           /* tuner on/off (our write and the pedal's report) */
     NANO_MSG_TUNER_PITCH = 0x80,     /* ~30/s while a note sounds */
+    NANO_MSG_TAP_TEMPO = 0x91,       /* tap tempo: field 3 = 1 while the mode is on, field 5 = BPM (f32); field 3 absent = mode left */
     NANO_MSG_EXPRESSION_VALUES = 0xaa,
 };
 

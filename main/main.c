@@ -354,6 +354,13 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     memcpy(pkt + 2, body, len);
     nano_event_t ev;
     nano_decode_event(pkt, len + 2, &ev);
+    if (ev.kind != NANO_EV_TUNER_PITCH && ev.kind != NANO_EV_EXPRESSION && ev.kind != NANO_EV_PRESET_CHANGED && ev.kind != NANO_EV_TAP_TEMPO) {
+        /* Everything else is rare: log the bytes so unknown pedal modes (tap tempo, ...) can be mapped. */
+        char hex[3 * 40 + 4];
+        size_t k = 0;
+        for (size_t i = 0; i < len + 2 && i < 40; i++) k += (size_t)snprintf(hex + k, sizeof(hex) - k, "%02X ", pkt[i]);
+        ESP_LOGI(TAG, "<- event kind %d type 0x%02X: %s%s", (int)ev.kind, (unsigned)(ev.msg_type < 0 ? 0 : ev.msg_type), hex, len + 2 > 40 ? "..." : "");
+    }
     switch (ev.kind) {
     case NANO_EV_PRESET_CHANGED:
         ESP_LOGI(TAG, "<- preset changed: %u", ev.preset + 1);
@@ -405,6 +412,15 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
             }
             lvgl_port_unlock();
         }
+        break;
+    case NANO_EV_TAP_TEMPO:
+        /* Live tempo while tapping; on exit the pedal does not always send a change notice, so re-read. */
+        s_state.tempo_bpm = ev.tempo_bpm;
+        if (lvgl_port_lock(20)) {
+            nano_ui_set_tempo(ev.tempo_bpm, ev.tap_active);
+            lvgl_port_unlock();
+        }
+        if (!ev.tap_active) schedule_state(DEBOUNCE_MS);
         break;
     case NANO_EV_EXPRESSION:
         break; /* not shown yet */

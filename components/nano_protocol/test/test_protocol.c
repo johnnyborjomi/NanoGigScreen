@@ -260,6 +260,13 @@ static void test_events(void)
     n = from_hex("0B C0 08 01 2D 00 00 DC 43 7F 00 00 00", pkt, sizeof(pkt)); /* pedal ended its tuner */
     nano_decode_event(pkt, n, &e);
     CHECK(e.kind == NANO_EV_TUNER_ACK && !e.tuner_on);
+    /* Tap tempo (2026-09-26): a tap at 135 BPM, then leaving the mode at 99 BPM. */
+    n = from_hex("0D C0 08 01 18 01 2D 00 00 07 43 91 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_TAP_TEMPO && e.tap_active && e.tempo_bpm == 135.0f);
+    n = from_hex("0B C0 08 01 2D 00 00 C6 42 91 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_TAP_TEMPO && !e.tap_active && e.tempo_bpm == 99.0f);
     /* Garbage does not fault. */
     n = from_hex("FF FF FF", pkt, sizeof(pkt));
     nano_decode_event(pkt, n, &e);

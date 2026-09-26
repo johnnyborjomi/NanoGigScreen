@@ -218,6 +218,16 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
     case NANO_MSG_SETTINGS:
         out->kind = NANO_EV_SETTINGS;
         return;
+    case NANO_MSG_TAP_TEMPO: {
+        /* `0D C0 08 01 18 01 2D <f32 BPM> 91 00 00 00` per tap; `0B C0 08 01 2D <f32> 91 00 00 00` on exit
+         * (captured 2026-09-26 on the user's pedal: hold the left switch, tap, hold again). */
+        float bpm;
+        if (!nano_first_fixed32_float(body, plen, 5, &bpm) || bpm < 20.0f || bpm > 400.0f) return;
+        out->kind = NANO_EV_TAP_TEMPO;
+        out->tap_active = nano_first_varint(body, plen, 3, 0) == 1;
+        out->tempo_bpm = bpm;
+        return;
+    }
     default:
         return;
     }
