@@ -109,11 +109,17 @@ int main(int argc, char **argv)
     uint8_t pkt[512];
     nano_state_t st;
 
-    /* 0. boot: nothing known yet */
+    /* 0. boot: the connect page while scanning, then after a deliberate disconnect */
     nano_ui_set_status("Looking for the pedal", false);
     nano_ui_set_stale(true);
+    nano_ui_set_connected(false);
     render(200);
     save(dir, "0-boot");
+    nano_ui_set_link_enabled(false);
+    nano_ui_set_status("Disconnected", false);
+    render(200);
+    save(dir, "0b-disconnected");
+    nano_ui_set_link_enabled(true);
 
     /* 1. connected, short name (real dump: preset 14) */
     nano_ui_set_status("Connected, MTU 517", true);
@@ -121,6 +127,7 @@ int main(int argc, char **argv)
     nano_decode_state(pkt + 2, n - 2, &st);
     nano_ui_set_state(&st, &meta);
     nano_ui_set_stale(false);
+    nano_ui_set_connected(true);
     render(200);
     save(dir, "1-short-name");
 
@@ -156,9 +163,10 @@ int main(int argc, char **argv)
     render(200);
     save(dir, "3-capture-bypassed");
 
-    /* 4. link lost */
+    /* 4. link lost: back to the connect page, the menu opens over it */
     nano_ui_set_status("Link lost", false);
     nano_ui_set_stale(true);
+    nano_ui_set_connected(false);
     render(200);
     save(dir, "4-link-lost");
 

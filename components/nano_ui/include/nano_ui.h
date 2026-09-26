@@ -1,5 +1,6 @@
 /*
- * The gig screen (LVGL 9, 320x240) and its overlays (menu, settings, tuner).
+ * The gig screen (LVGL 9, 320x240) and its overlays (menu, settings, tuner, tempo,
+ * connect page).
  *
  * Main view: top bar (link status, tempo, gate, menu button), preset row
  * (prev button, bank label + name, next button), capture and IR lines, five
@@ -27,6 +28,7 @@ typedef enum {
     NANO_VIEW_SETTINGS,
     NANO_VIEW_TUNER,
     NANO_VIEW_TEMPO,
+    NANO_VIEW_CONNECT,     /* no live state: "put the pedal in connect mode" / Connect button */
 } nano_view_t;
 
 typedef struct {
@@ -67,6 +69,12 @@ void nano_ui_set_state(const nano_state_t *state, const nano_metadata_t *meta);
 void nano_ui_set_tempo(float bpm, bool tapping);
 /* Grey everything out while there is no link. */
 void nano_ui_set_stale(bool stale);
+/*
+ * live = a state dump arrived on this link: the main view becomes the base view (the connect page
+ * closes if it is showing). false = the link is down: the connect page replaces the main, tuner
+ * and tempo views (menu and settings stay open; closing them lands on the connect page).
+ */
+void nano_ui_set_connected(bool live);
 /* Switch views (the tuner view calls on_tuner on open / close). */
 void nano_ui_show(nano_view_t view);
 nano_view_t nano_ui_view(void);

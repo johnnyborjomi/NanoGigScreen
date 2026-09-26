@@ -46,11 +46,16 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define TILE_H 60
 
 static nano_ui_callbacks_t s_cb;
-static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view;
+static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
 static lv_obj_t *s_tempo_big, *s_tempo_hint;
 static float s_tempo_bpm;
 static bool s_tempo_tapping;
 static nano_view_t s_view = NANO_VIEW_MAIN;
+/* Where "close" lands: the main view once a state dump arrived, the connect page otherwise. */
+static nano_view_t s_base_view = NANO_VIEW_CONNECT;
+
+/* connect page */
+static lv_obj_t *s_connect_title, *s_connect_status, *s_connect_dot, *s_connect_pair, *s_connect_btn, *s_connect_free;
 
 /* main view */
 static lv_obj_t *s_status_dot, *s_status, *s_tempo, *s_gate;
@@ -171,7 +176,7 @@ static const lv_font_t *tile_font(const char *text, int32_t max_w)
 static void on_prev(lv_event_t *e) { (void)e; if (s_cb.on_prev_preset) s_cb.on_prev_preset(); }
 static void on_next(lv_event_t *e) { (void)e; if (s_cb.on_next_preset) s_cb.on_next_preset(); }
 static void on_menu(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_MENU); }
-static void on_close(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_MAIN); }
+static void on_close(lv_event_t *e) { (void)e; nano_ui_show(s_base_view); }
 static void on_open_settings(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_SETTINGS); }
 static void on_open_tuner(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_TUNER); }
 static void on_back_to_menu(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_MENU); }
@@ -188,7 +193,17 @@ static void on_link_toggle(lv_event_t *e)
     s_link_enabled = !s_link_enabled;
     nano_ui_set_link_enabled(s_link_enabled);
     if (s_cb.on_link) s_cb.on_link(s_link_enabled);
-    nano_ui_show(NANO_VIEW_MAIN);
+    nano_ui_show(s_base_view);
+}
+
+/* The connect page's button: enable the link (the app scans again). */
+static void on_connect_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (s_link_enabled) return;
+    s_link_enabled = true;
+    nano_ui_set_link_enabled(true);
+    if (s_cb.on_link) s_cb.on_link(true);
 }
 
 static void on_gate_clicked(lv_event_t *e)
@@ -432,6 +447,104 @@ static void build_tempo(lv_obj_t *scr)
     lv_obj_add_event_cb(done, on_pressed, LV_EVENT_PRESSED, NULL);
 }
 
+/* ---- connect page --------------------------------------------------------- */
+
+#define RING_D 62
+#define RING_INNER_D 40
+#define RING_GAP 44        /* room for the "+" between the rings */
+
+static lv_obj_t *make_ring(lv_obj_t *parent, int32_t x, int32_t y, const char *caption)
+{
+    lv_obj_t *outer = make_box(parent, x, y, RING_D, RING_D, C_PANEL);
+    lv_obj_set_style_radius(outer, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(outer, 3, 0);
+    lv_obj_set_style_border_color(outer, lv_color_hex(C_ON), 0);
+    lv_obj_t *inner = make_box(outer, 0, 0, RING_INNER_D, RING_INNER_D, 0x22B08A);
+    lv_obj_set_style_radius(inner, LV_RADIUS_CIRCLE, 0);
+    lv_obj_center(inner);
+    lv_obj_t *l = make_label(parent, &montserrat_medium_12, C_TEXT);
+    lv_label_set_text(l, caption);
+    lv_obj_set_style_text_letter_space(l, 2, 0);
+    lv_obj_set_width(l, RING_D + 40);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(l, x - 20, y + RING_D + 6);
+    return outer;
+}
+
+static void dot_opa_cb(void *obj, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0); }
+
+/* The status dot breathes while the page is showing (the only motion on a page that may sit for minutes). */
+static void connect_dot_animate(bool run)
+{
+    lv_anim_delete(s_connect_dot, dot_opa_cb);
+    lv_obj_set_style_opa(s_connect_dot, LV_OPA_COVER, 0);
+    if (!run) return;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_connect_dot);
+    lv_anim_set_exec_cb(&a, dot_opa_cb);
+    lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_20);
+    lv_anim_set_duration(&a, 700);
+    lv_anim_set_playback_duration(&a, 700);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&a);
+}
+
+static void build_connect(lv_obj_t *scr)
+{
+    s_connect = make_box(scr, 0, 0, SCREEN_W, SCREEN_H, C_BG);
+    lv_obj_add_event_cb(s_connect, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_t *menu = make_button(s_connect, SCREEN_W - 44, 0, 44, TOP_H + 4, LV_SYMBOL_LIST, &lv_font_montserrat_14, C_BG, C_MUTED, on_menu, NULL);
+    lv_obj_add_event_cb(menu, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_set_ext_click_area(menu, 6);
+
+    s_connect_title = make_label(s_connect, &lv_font_montserrat_14, C_TEXT);
+    lv_obj_set_width(s_connect_title, SCREEN_W - 88);
+    lv_obj_set_style_text_align(s_connect_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_connect_title, 44, 28);
+    lv_label_set_text(s_connect_title, "Put the pedal in connect mode");
+
+    /* Scanning: the pairing gesture (EXIT + CAPTURE), as Cortex Cloud shows it. */
+    s_connect_pair = make_box(s_connect, 0, 50, SCREEN_W, 150, C_BG);
+    const int32_t left_x = SCREEN_W / 2 - RING_GAP / 2 - RING_D;
+    const int32_t right_x = SCREEN_W / 2 + RING_GAP / 2;
+    make_ring(s_connect_pair, left_x, 0, "EXIT");
+    make_ring(s_connect_pair, right_x, 0, "CAPTURE");
+    lv_obj_t *plus = make_label(s_connect_pair, &lv_font_montserrat_24, C_MUTED);
+    lv_label_set_text(plus, "+");
+    lv_obj_set_width(plus, RING_GAP);
+    lv_obj_set_style_text_align(plus, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(plus, SCREEN_W / 2 - RING_GAP / 2, RING_D / 2 - 14);
+    lv_obj_t *hold = make_label(s_connect_pair, &lv_font_montserrat_14, C_TEXT);
+    lv_label_set_text(hold, "Hold both for 2 seconds");
+    lv_obj_set_width(hold, SCREEN_W);
+    lv_obj_set_style_text_align(hold, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(hold, 0, RING_D + 30);
+    lv_obj_t *note = make_label(s_connect_pair, &lv_font_montserrat_12, C_MUTED);
+    lv_label_set_text(note, "The pedal pairs with one device at a time: close Cortex Cloud on your phone first.");
+    lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(note, SCREEN_W - 40);
+    lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(note, 20, RING_D + 54);
+
+    /* Disconnected on purpose: one button brings the link back. */
+    s_connect_btn = make_button(s_connect, SCREEN_W / 2 - 80, 96, 160, 48, LV_SYMBOL_BLUETOOTH "  Connect", &lv_font_montserrat_20, C_ACCENT, C_FX_TEXT, on_connect_clicked, NULL);
+    lv_obj_add_event_cb(s_connect_btn, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_set_hidden(s_connect_btn, true);
+    s_connect_free = make_label(s_connect, &lv_font_montserrat_12, C_MUTED);
+    lv_label_set_text(s_connect_free, "Cortex Cloud can use the pedal now");
+    lv_obj_set_width(s_connect_free, SCREEN_W);
+    lv_obj_set_style_text_align(s_connect_free, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_connect_free, 0, 96 + 48 + 14);
+    lv_obj_set_hidden(s_connect_free, true);
+
+    s_connect_status = make_label(s_connect, &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(s_connect_status, LV_ALIGN_BOTTOM_MID, 8, -12);
+    s_connect_dot = make_dot(s_connect, 0, 0, 10);
+    lv_obj_set_style_bg_color(s_connect_dot, lv_color_hex(C_WARN), 0);
+    lv_obj_set_hidden(s_connect, true);
+}
+
 static void refresh_tempo_views(void)
 {
     if (s_tempo_bpm <= 0) {
@@ -464,7 +577,10 @@ void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb)
     build_settings(scr);
     build_tuner(scr);
     build_tempo(scr);
+    build_connect(scr);
     nano_ui_set_link_enabled(true);
+    nano_ui_set_status("Starting", false);
+    nano_ui_set_connected(false);
 }
 
 static void show_view(nano_view_t view, bool notify)
@@ -477,6 +593,8 @@ static void show_view(nano_view_t view, bool notify)
     lv_obj_set_hidden(s_settings, view != NANO_VIEW_SETTINGS);
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
     lv_obj_set_hidden(s_tempo_view, view != NANO_VIEW_TEMPO);
+    lv_obj_set_hidden(s_connect, view != NANO_VIEW_CONNECT);
+    connect_dot_animate(view == NANO_VIEW_CONNECT && s_link_enabled);
     if (view == NANO_VIEW_TUNER) {
         nano_ui_set_tuner(NULL, 0, false);
         if (notify && s_cb.on_tuner) s_cb.on_tuner(true);
@@ -491,7 +609,15 @@ void nano_ui_open_tempo_from_pedal(void)
 
 void nano_ui_close_from_pedal(void)
 {
-    show_view(NANO_VIEW_MAIN, false);
+    show_view(s_base_view, false);
+}
+
+void nano_ui_set_connected(bool live)
+{
+    s_base_view = live ? NANO_VIEW_MAIN : NANO_VIEW_CONNECT;
+    if (live && s_view == NANO_VIEW_CONNECT) show_view(NANO_VIEW_MAIN, false);
+    /* Down: the pedal's views make no claims any more; the menu and settings can stay open. */
+    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO)) show_view(NANO_VIEW_CONNECT, false);
 }
 
 void nano_ui_show(nano_view_t view)
@@ -523,13 +649,24 @@ void nano_ui_set_status(const char *text, bool connected)
 {
     lv_label_set_text(s_status, text);
     lv_obj_set_style_bg_color(s_status_dot, lv_color_hex(connected ? C_ON : C_WARN), 0);
+    lv_label_set_text(s_connect_status, text);
+    lv_obj_set_style_bg_color(s_connect_dot, lv_color_hex(connected ? C_ON : s_link_enabled ? C_WARN : C_DIM), 0);
+    lv_obj_update_layout(s_connect_status);
+    lv_obj_align_to(s_connect_dot, s_connect_status, LV_ALIGN_OUT_LEFT_MID, -8, 0);
 }
 
 void nano_ui_set_link_enabled(bool enabled)
 {
     s_link_enabled = enabled;
     lv_label_set_text(s_link_btn_label, enabled ? LV_SYMBOL_BLUETOOTH "  Disconnect" : LV_SYMBOL_BLUETOOTH "  Connect");
+    lv_obj_set_style_text_color(s_link_btn_label, lv_color_hex(enabled ? C_ERROR : C_TEXT), 0);
     lv_obj_center(s_link_btn_label);
+    /* Connect page: the pairing gesture while scanning, a Connect button after a deliberate disconnect. */
+    lv_label_set_text(s_connect_title, enabled ? "Put the pedal in connect mode" : "Disconnected from the pedal");
+    lv_obj_set_hidden(s_connect_pair, !enabled);
+    lv_obj_set_hidden(s_connect_btn, enabled);
+    lv_obj_set_hidden(s_connect_free, enabled);
+    connect_dot_animate(s_view == NANO_VIEW_CONNECT && enabled);
 }
 
 void nano_ui_set_bank_size(uint8_t per_bank)

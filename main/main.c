@@ -386,6 +386,7 @@ static void on_state(const nano_state_t *in)
     if (lvgl_port_lock(100)) {
         nano_ui_set_state(st, s_meta_valid ? &s_meta_blob.meta : NULL);
         nano_ui_set_stale(false);
+        nano_ui_set_connected(true); /* the connect page closes only once the pedal's state is on screen */
         lvgl_port_unlock();
     }
     if (!s_meta_requested_this_link && cache_contradicts_state()) request_metadata();
@@ -535,10 +536,6 @@ static void on_status(nano_ble_status_t status, const char *detail)
         s_link_ready = false;
         s_state_due_us = 0;
         nano_assembler_reset(&s_asm);
-        if (lvgl_port_lock(50)) {
-            if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_show(NANO_VIEW_MAIN);
-            lvgl_port_unlock();
-        }
     }
     cyd_led(!ready && status != NANO_BLE_CONNECTING, false, status == NANO_BLE_CONNECTING);
     if (lvgl_port_lock(100)) {
@@ -551,6 +548,8 @@ static void on_status(nano_ble_status_t status, const char *detail)
         }
         nano_ui_set_status(text, ready);
         nano_ui_set_stale(!ready);
+        /* Any drop, deliberate or not, shows the connect page: the main view would claim a state we no longer know. */
+        if (!ready) nano_ui_set_connected(false);
         lvgl_port_unlock();
     }
 }
@@ -649,6 +648,7 @@ void app_main(void)
         nano_ui_set_bank_size(bank_load());
         nano_ui_set_status("Starting Bluetooth", false);
         nano_ui_set_stale(true);
+        nano_ui_set_connected(false);
         lvgl_port_unlock();
     }
     vTaskDelay(pdMS_TO_TICKS(60)); /* let the first frame flush before lighting the panel */
