@@ -1,0 +1,38 @@
+menu "NanoGig Screen board"
+
+    choice CYD_PANEL
+        prompt "LCD controller"
+        default CYD_PANEL_ST7789
+        help
+            ESP32-2432S028R boards with a single micro-USB port carry an ILI9341.
+            Boards with both micro-USB and USB-C (CYD2USB) carry an ST7789: the
+            user's board, confirmed 2026-09-26 with the community TFT_eSPI setup
+            (ST7789, BGR, inversion off). If colours look wrong, try the other one.
+        config CYD_PANEL_ILI9341
+            bool "ILI9341"
+        config CYD_PANEL_ST7789
+            bool "ST7789"
+    endchoice
+
+    config CYD_PANEL_INVERT
+        bool "Invert panel colours"
+        default n
+        help
+            Needed on the ST7789 variant (and on any board whose white shows as black).
+
+    config CYD_ROTATE_180
+        bool "Rotate the screen 180 degrees"
+        default n
+        help
+            Landscape with the USB connector on the other side.
+
+    config CYD_TOUCH_MIRROR_X
+        bool "Mirror touch X"
+        default n
+        help
+            The user's CYD2USB needs neither mirror (bench 2026-09-26).
+    config CYD_TOUCH_MIRROR_Y
+        bool "Mirror touch Y"
+        default n
+
+endmenu

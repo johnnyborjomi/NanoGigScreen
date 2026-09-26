@@ -1,0 +1,102 @@
+#include "nano_models.h"
+
+#include <string.h>
+
+/* The EQ models are listed under both Utility and Utility/EQ upstream; Utility/EQ wins here. */
+static const nano_fx_model_t MODELS[] = {
+    { "12", "Chief BD2", NANO_CAT_OVERDRIVE },
+    { "0D", "Chief OD1", NANO_CAT_OVERDRIVE },
+    { "06", "Exotic", NANO_CAT_OVERDRIVE },
+    { "BF17", "Exotic Bass Z Boost", NANO_CAT_OVERDRIVE },
+    { "17", "Exotic Z Boost", NANO_CAT_OVERDRIVE },
+    { "16", "Facial Fuzz", NANO_CAT_OVERDRIVE },
+    { "1B", "Green 808", NANO_CAT_OVERDRIVE },
+    { "B817", "Microtubes B3K", NANO_CAT_OVERDRIVE },
+    { "03", "OD250", NANO_CAT_OVERDRIVE },
+    { "02", "Obsessive Drive", NANO_CAT_OVERDRIVE },
+    { "04", "Rodent Drive", NANO_CAT_OVERDRIVE },
+    { "817D", "Adaptive Gate", NANO_CAT_UTILITY },
+    { "827D", "Utility Gate", NANO_CAT_UTILITY },
+    { "867D", "Volume", NANO_CAT_UTILITY },
+    { "B446", "Bass Wah", NANO_CAT_WAH_FILTER },
+    { "B246", "Bubba Wah", NANO_CAT_WAH_FILTER },
+    { "B646", "Crying Clyde Wah", NANO_CAT_WAH_FILTER },
+    { "B546", "Crying Wah", NANO_CAT_WAH_FILTER },
+    { "C6BB01", "Envelope Filter", NANO_CAT_WAH_FILTER },
+    { "C1BB01", "Love Meat", NANO_CAT_WAH_FILTER },
+    { "8927", "Legendary 87 (M)", NANO_CAT_COMPRESSOR },
+    { "8F27", "Opto Comp (M)", NANO_CAT_COMPRESSOR },
+    { "8C27", "Solid State Comp (M)", NANO_CAT_COMPRESSOR },
+    { "8D27", "VCA Comp (M)", NANO_CAT_COMPRESSOR },
+    { "D18C01", "Transpose", NANO_CAT_PITCH },
+    { "8B7D", "Doubler", NANO_CAT_UTILITY_EQ },
+    { "A51F", "Graphic 9", NANO_CAT_UTILITY_EQ },
+    { "A31F", "Low-High Cut", NANO_CAT_UTILITY_EQ },
+    { "A11F", "Parametric 3", NANO_CAT_UTILITY_EQ },
+    { "9427", "Legendary 87 (ST)", NANO_CAT_UTILITY_EQ },
+    { "9727", "Opto Comp (ST)", NANO_CAT_UTILITY_EQ },
+    { "9527", "Solid State Comp (ST)", NANO_CAT_UTILITY_EQ },
+    { "9627", "VCA Comp (ST)", NANO_CAT_UTILITY_EQ },
+    { "F036", "Chief CE2W (ST)", NANO_CAT_MODULATION },
+    { "F336", "Chief DC2W (ST)", NANO_CAT_MODULATION },
+    { "EF36", "Chorus 229T", NANO_CAT_MODULATION },
+    { "EE36", "Dream Chorus", NANO_CAT_MODULATION },
+    { "ED36", "MX Flanger", NANO_CAT_MODULATION },
+    { "F436", "MX Phase 95", NANO_CAT_MODULATION },
+    { "F536", "MX Vibe", NANO_CAT_MODULATION },
+    { "DC36", "Tremolo", NANO_CAT_MODULATION },
+    { "FA2E", "Analog Delay", NANO_CAT_DELAY },
+    { "FF2E", "Circular Delay", NANO_CAT_DELAY },
+    { "FB2E", "Digital Delay (ST)", NANO_CAT_DELAY },
+    { "FC2E", "Dual Delay", NANO_CAT_DELAY },
+    { "FE2E", "Dual Reverse Delay", NANO_CAT_DELAY },
+    { "F42E", "Tape Delay", NANO_CAT_DELAY },
+    { "C83E", "Ambience", NANO_CAT_REVERB },
+    { "C93E", "Cave", NANO_CAT_REVERB },
+    { "C33E", "Hall", NANO_CAT_REVERB },
+    { "CB3E", "Mind Hall", NANO_CAT_REVERB },
+    { "C73E", "Modulated", NANO_CAT_REVERB },
+    { "C03E", "Room", NANO_CAT_REVERB },
+};
+
+const nano_fx_model_t *nano_lookup_fx_model(const char *id_hex)
+{
+    if (!id_hex || !*id_hex) return NULL;
+    for (size_t i = 0; i < sizeof(MODELS) / sizeof(MODELS[0]); i++) {
+        if (strcmp(MODELS[i].id, id_hex) == 0) return &MODELS[i];
+    }
+    return NULL;
+}
+
+static const char *const CATEGORY_NAMES[NANO_CAT_COUNT] = {
+    "Unknown", "Overdrive", "Compressor", "Modulation", "Delay", "Reverb", "Pitch", "Wah/Filter", "Utility", "Utility/EQ",
+};
+
+const char *nano_category_name(nano_category_t c)
+{
+    return (c >= 0 && c < NANO_CAT_COUNT) ? CATEGORY_NAMES[c] : CATEGORY_NAMES[0];
+}
+
+/* NanoGig `--fx-*` tokens. Reverb is shifted to azure so it stays apart from delay on stage. */
+static const uint32_t CATEGORY_COLORS[NANO_CAT_COUNT] = {
+    0xA8A29E, /* unknown */
+    0xFF6A00, /* overdrive */
+    0x4CF06A, /* compressor */
+    0x3A0CF5, /* modulation (indigo) */
+    0x00F0D8, /* delay */
+    0x3D9BFF, /* reverb */
+    0xFFD23F, /* pitch */
+    0xF050C8, /* wah/filter */
+    0xF2F2F2, /* utility */
+    0xF2F2F2, /* utility/eq */
+};
+
+uint32_t nano_category_color(nano_category_t c)
+{
+    return (c >= 0 && c < NANO_CAT_COUNT) ? CATEGORY_COLORS[c] : CATEGORY_COLORS[0];
+}
+
+bool nano_category_light_text(nano_category_t c)
+{
+    return c == NANO_CAT_MODULATION;
+}
