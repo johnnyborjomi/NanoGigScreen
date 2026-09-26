@@ -46,6 +46,10 @@ typedef struct {
     void (*on_link)(bool connect);
     /* Settings changed the presets-per-bank count (2..8). */
     void (*on_bank_size)(uint8_t per_bank);
+    /* Settings changed the preset label style (nano_label_style_t). */
+    void (*on_label_style)(uint8_t style);
+    /* Settings toggled "Mute outputs 1/2": the app writes it to the pedal. */
+    void (*on_outputs_mute)(bool mute);
     /* Tempo view: - / + pressed (delta in BPM). */
     void (*on_tempo_delta)(int delta);
     /* Tempo view opened (true) / closed (false) from the screen: the app puts the pedal in / out of tap tempo mode. */
@@ -59,6 +63,12 @@ void nano_ui_set_status(const char *text, bool connected);
 void nano_ui_set_link_enabled(bool enabled);
 /* Presets per bank for the "3B" label (2..8). */
 void nano_ui_set_bank_size(uint8_t per_bank);
+/* Preset label style (nano_label_style_t). */
+void nano_ui_set_label_style(uint8_t style);
+/* Outputs 1/2 mute as the pedal reports it: top bar badge + settings toggle. */
+void nano_ui_set_outputs_muted(bool muted);
+/* Settings pager (for previews / tests). */
+void nano_ui_settings_page(int index);
 /* Show a preset immediately (footswitch event / optimistic switch) using cached names. */
 void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta);
 /* Footswitch assignments IA, IB, IIA, IIB (preset indices): badges appear on the assigned preset. */

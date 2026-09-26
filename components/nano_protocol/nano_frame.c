@@ -95,6 +95,14 @@ size_t nano_build_tempo_exit(uint8_t *out, size_t cap, float bpm)
     return 13;
 }
 
+size_t nano_build_outputs_mute(uint8_t *out, size_t cap, bool mute)
+{
+    if (cap < 10) return 0;
+    const uint8_t frame[10] = { 0x08, 0xC0, 0x08, 0x01, 0x68, mute ? 0x01 : 0x00, 0x43, 0x00, 0x00, 0x00 };
+    memcpy(out, frame, 10);
+    return 10;
+}
+
 size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mute)
 {
     if (cap < 17 || reference_hz < 400.0f || reference_hz > 480.0f) return 0;

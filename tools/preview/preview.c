@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8 };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -122,7 +122,7 @@ int main(int argc, char **argv)
     nano_ui_set_link_enabled(true);
 
     /* 1. connected, short name (real dump: preset 14) */
-    nano_ui_set_status("Connected, MTU 517", true);
+    nano_ui_set_status("Connected", true);
     size_t n = from_hex(HW_STATE_SINGLE, pkt, sizeof(pkt));
     nano_decode_state(pkt + 2, n - 2, &st);
     nano_ui_set_state(&st, &meta);
@@ -142,11 +142,24 @@ int main(int argc, char **argv)
     render(200);
     save(dir, "2-long-name");
 
-    /* 2a. tap tempo in progress */
+    /* 2a. tap tempo in progress, outputs muted */
     nano_ui_set_tempo(135.0f, true);
+    nano_ui_set_outputs_muted(true);
     render(200);
-    save(dir, "2a-tap-tempo");
+    save(dir, "2a-tap-tempo-muted");
     nano_ui_set_tempo(120.0f, false);
+
+    /* 2c. label styles: A2 and numeric */
+    nano_ui_set_label_style(NANO_LABEL_LETTER_NUMBER);
+    nano_ui_set_state(&st, &meta);
+    render(200);
+    save(dir, "2c-label-a2");
+    nano_ui_set_label_style(NANO_LABEL_NUMERIC);
+    nano_ui_set_state(&st, &meta);
+    render(200);
+    save(dir, "2d-label-numeric");
+    nano_ui_set_label_style(NANO_LABEL_NUMBER_LETTER);
+    nano_ui_set_outputs_muted(false);
 
     /* 2b. every switch on this preset (worst case for the label column) */
     {
@@ -175,8 +188,10 @@ int main(int argc, char **argv)
     render(200);
     save(dir, "5-menu");
     nano_ui_show(NANO_VIEW_SETTINGS);
+    nano_ui_set_outputs_muted(true);
     render(200);
     save(dir, "6-settings");
+    nano_ui_set_outputs_muted(false);
     nano_ui_show(NANO_VIEW_TUNER);
     nano_ui_set_tuner("A#", -7.3f, false);
     render(200);
@@ -195,7 +210,7 @@ int main(int argc, char **argv)
     /* 9. medium name, 8 per bank */
     nano_ui_show(NANO_VIEW_MAIN);
     nano_ui_set_stale(false);
-    nano_ui_set_status("Connected, MTU 517", true);
+    nano_ui_set_status("Connected", true);
     nano_ui_set_bank_size(8);
     n = from_hex(HW_STATE_SEG_1, pkt, sizeof(pkt));
     memcpy(body, pkt + 2, n - 2);

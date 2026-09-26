@@ -41,6 +41,8 @@ static const char *TAG = "nanogig";
 #define NVS_NAMESPACE "nanogig"
 #define NVS_KEY_META "meta"
 #define NVS_KEY_BANK "bank"
+#define NVS_KEY_LABEL_STYLE "lstyle"
+#define SETTINGS_READ_DELAY_MS 400  /* after the first state dump / a mute ack: one write at a time on the link */
 #define META_MAGIC 0x4E474D31u      /* "NGM1" */
 
 typedef struct {
@@ -48,16 +50,16 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
     char detail[32];
     uint8_t fx_slot;
     bool fx_on;
-    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect */
+    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute */
     int delta;      /* MSG_TEMPO_DELTA */
-    uint8_t value;  /* MSG_BANK_SIZE */
+    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE */
     packet_t pkt;
 } app_msg_t;
 
@@ -96,6 +98,9 @@ static int64_t s_pending_since_us;
 #define TUNER_SILENCE_US (600 * 1000)
 #define STATE_MIN_GAP_US (200 * 1000) /* a select's ack events also ask; one dump is enough */
 static bool s_link_ready;
+/* Device settings (outputs 1/2 mute) are read once per link after the first state dump, and after every mute ack. */
+static bool s_settings_read_this_link;
+static int64_t s_settings_due_us;   /* 0 = none pending */
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -135,6 +140,17 @@ static void nvs_save_u8(const char *key, uint8_t v)
 }
 
 static void bank_save(uint8_t v) { nvs_save_u8(NVS_KEY_BANK, v); }
+
+static uint8_t label_style_load(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_KEY_LABEL_STYLE, &v);
+        nvs_close(h);
+    }
+    return v <= NANO_LABEL_NUMERIC ? v : 0;
+}
 
 
 static void meta_save(void)
@@ -182,6 +198,8 @@ static void ui_on_tuner_mute(bool mute) { app_msg_t m = { .kind = MSG_TUNER_MUTE
 static void ui_on_tuner(bool on) { app_msg_t m = { .kind = MSG_TUNER, .flag = on }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_link(bool connect) { app_msg_t m = { .kind = MSG_LINK, .flag = connect }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_bank_size(uint8_t v) { app_msg_t m = { .kind = MSG_BANK_SIZE, .value = v }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_label_style(uint8_t v) { app_msg_t m = { .kind = MSG_LABEL_STYLE, .value = v }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_outputs_mute(bool mute) { app_msg_t m = { .kind = MSG_OUTPUTS_MUTE, .flag = mute }; xQueueSend(s_queue, &m, 0); }
 
 /* ---- requests ------------------------------------------------------------- */
 
@@ -198,6 +216,30 @@ static void request_metadata(void)
 {
     s_meta_requested_this_link = true;
     if (nano_ble_write(NANO_REQ_METADATA, sizeof(NANO_REQ_METADATA)) == 0) ESP_LOGI(TAG, "-> metadata request (~6 s)");
+}
+
+static void schedule_settings(uint32_t delay_ms)
+{
+    s_settings_due_us = esp_timer_get_time() + (int64_t)delay_ms * 1000;
+}
+
+static void request_settings(void)
+{
+    s_settings_due_us = 0;
+    if (!s_link_ready) return;
+    s_settings_read_this_link = true;
+    if (nano_ble_write(NANO_REQ_SETTINGS, sizeof(NANO_REQ_SETTINGS)) == 0) ESP_LOGI(TAG, "-> settings request");
+}
+
+/* Outputs 1/2 mute: `08 C0 08 01 68 <1/0> 43 00 00 00` (Cortex Cloud's global switch); the 0x44 ack and the
+ * settings reply's field 16 confirm. */
+static void set_outputs_mute(bool mute)
+{
+    if (!s_link_ready) return;
+    uint8_t frame[10];
+    size_t n = nano_build_outputs_mute(frame, sizeof(frame), mute);
+    if (n && nano_ble_write(frame, n) == 0) ESP_LOGI(TAG, "-> outputs 1/2 %s", mute ? "mute" : "on");
+    schedule_settings(SETTINGS_READ_DELAY_MS);
 }
 
 static void schedule_state(uint32_t delay_ms)
@@ -390,6 +432,7 @@ static void on_state(const nano_state_t *in)
         lvgl_port_unlock();
     }
     if (!s_meta_requested_this_link && cache_contradicts_state()) request_metadata();
+    else if (!s_settings_read_this_link && !s_settings_due_us) schedule_settings(SETTINGS_READ_DELAY_MS);
 }
 
 static void on_metadata(const nano_metadata_t *m)
@@ -405,6 +448,7 @@ static void on_metadata(const nano_metadata_t *m)
     if (changed) meta_save();
     /* The state inside the metadata reply is as old as the request: ask for a fresh one. */
     request_state();
+    if (!s_settings_read_this_link) schedule_settings(SETTINGS_READ_DELAY_MS);
 }
 
 static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, bool complete)
@@ -516,6 +560,17 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
             schedule_state(DEBOUNCE_MS);
         }
         break;
+    case NANO_EV_SETTINGS:
+        ESP_LOGI(TAG, "<- settings: outputs 1/2 %s", ev.outputs_muted ? "muted" : "on");
+        if (lvgl_port_lock(50)) {
+            nano_ui_set_outputs_muted(ev.outputs_muted);
+            lvgl_port_unlock();
+        }
+        break;
+    case NANO_EV_OUTPUTS_MUTE_ACK:
+        ESP_LOGI(TAG, "<- outputs mute ack");
+        schedule_settings(SETTINGS_READ_DELAY_MS); /* confirm against the pedal's own report */
+        break;
     case NANO_EV_EXPRESSION:
         break; /* not shown yet */
     default:
@@ -530,18 +585,25 @@ static void on_status(nano_ble_status_t status, const char *detail)
     if (ready && !s_link_ready) {
         s_link_ready = true;
         s_meta_requested_this_link = false;
+        s_settings_read_this_link = false;
+        s_settings_due_us = 0;
         nano_assembler_reset(&s_asm);
         request_state();
     } else if (!ready && s_link_ready) {
         s_link_ready = false;
         s_state_due_us = 0;
+        s_settings_due_us = 0;
         nano_assembler_reset(&s_asm);
+        if (lvgl_port_lock(50)) {
+            nano_ui_set_outputs_muted(false); /* unknown until the next settings read */
+            lvgl_port_unlock();
+        }
     }
     cyd_led(!ready && status != NANO_BLE_CONNECTING, false, status == NANO_BLE_CONNECTING);
     if (lvgl_port_lock(100)) {
         char text[48];
-        if (ready && nano_ble_mtu()) {
-            snprintf(text, sizeof(text), "Connected, MTU %u", nano_ble_mtu());
+        if (ready) {
+            snprintf(text, sizeof(text), "Connected");
         } else {
             strncpy(text, detail, sizeof(text) - 1);
             text[sizeof(text) - 1] = '\0';
@@ -602,6 +664,16 @@ static void app_task(void *arg)
                 ESP_LOGI(TAG, "link %s", m.flag ? "enabled" : "disabled");
                 nano_ble_set_enabled(m.flag);
                 break;
+            case MSG_LABEL_STYLE:
+                nvs_save_u8(NVS_KEY_LABEL_STYLE, m.value);
+                if (lvgl_port_lock(50)) {
+                    nano_ui_set_preset(s_state_valid ? s_state.active_preset : 0, s_meta_valid ? &s_meta_blob.meta : NULL);
+                    lvgl_port_unlock();
+                }
+                break;
+            case MSG_OUTPUTS_MUTE:
+                set_outputs_mute(m.flag);
+                break;
             case MSG_BANK_SIZE:
                 bank_save(m.value);
                 if (lvgl_port_lock(50)) {
@@ -614,6 +686,7 @@ static void app_task(void *arg)
         nano_assembler_tick(&s_asm, now_ms());
         tempo_edit_tick();
         if (s_link_ready && s_state_due_us && esp_timer_get_time() >= s_state_due_us) request_state();
+        if (s_link_ready && s_settings_due_us && esp_timer_get_time() >= s_settings_due_us) request_settings();
         if (!s_tuner_cleared && esp_timer_get_time() - s_last_pitch_us > TUNER_SILENCE_US) {
             s_tuner_cleared = true;
             if (lvgl_port_lock(20)) {
@@ -642,10 +715,12 @@ void app_main(void)
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
+        .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute,
     };
     if (lvgl_port_lock(0)) {
         nano_ui_create(disp, &ui_cb);
         nano_ui_set_bank_size(bank_load());
+        nano_ui_set_label_style(label_style_load());
         nano_ui_set_status("Starting Bluetooth", false);
         nano_ui_set_stale(true);
         nano_ui_set_connected(false);

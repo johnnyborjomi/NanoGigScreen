@@ -354,10 +354,27 @@ static void test_labels_and_models(void)
 {
     printf("labels and models\n");
     char l[8];
-    nano_preset_label(0, 4, l, sizeof(l)); CHECK_STR(l, "1A");
-    nano_preset_label(9, 4, l, sizeof(l)); CHECK_STR(l, "3B");
-    nano_preset_label(63, 4, l, sizeof(l)); CHECK_STR(l, "16D");
-    nano_preset_label(9, 8, l, sizeof(l)); CHECK_STR(l, "2B");
+    nano_preset_label(0, 4, NANO_LABEL_NUMBER_LETTER, l, sizeof(l)); CHECK_STR(l, "1A");
+    nano_preset_label(9, 4, NANO_LABEL_NUMBER_LETTER, l, sizeof(l)); CHECK_STR(l, "3B");
+    nano_preset_label(63, 4, NANO_LABEL_NUMBER_LETTER, l, sizeof(l)); CHECK_STR(l, "16D");
+    nano_preset_label(9, 8, NANO_LABEL_NUMBER_LETTER, l, sizeof(l)); CHECK_STR(l, "2B");
+    nano_preset_label(9, 8, NANO_LABEL_LETTER_NUMBER, l, sizeof(l)); CHECK_STR(l, "B2");
+    nano_preset_label(9, 4, NANO_LABEL_LETTER_NUMBER, l, sizeof(l)); CHECK_STR(l, "C2");
+    nano_preset_label(63, 2, NANO_LABEL_LETTER_NUMBER, l, sizeof(l)); CHECK_STR(l, "AF2"); /* bank 31 */
+    nano_preset_label(9, 4, NANO_LABEL_NUMERIC, l, sizeof(l)); CHECK_STR(l, "10");
+    nano_preset_label(63, 4, NANO_LABEL_NUMERIC, l, sizeof(l)); CHECK_STR(l, "64");
+    /* Outputs mute write (byte-exact from Cortex Cloud) and the pedal's replies. */
+    uint8_t m[10];
+    CHECK(nano_build_outputs_mute(m, sizeof(m), true) == 10 && m[4] == 0x68 && m[5] == 1 && m[6] == 0x43);
+    CHECK(nano_build_outputs_mute(m, sizeof(m), false) == 10 && m[5] == 0);
+    nano_event_t ev;
+    const uint8_t ack[] = { 0x08, 0xC0, 0x08, 0x01, 0x18, 0x01, 0x44, 0x00, 0x00, 0x00 };
+    nano_decode_event(ack, sizeof(ack), &ev); CHECK(ev.kind == NANO_EV_OUTPUTS_MUTE_ACK);
+    /* Settings reply, minimal shape: `C0 08 01 ... 80 01 01 42 00 00 00` with field 16 = 1. */
+    const uint8_t muted[] = { 0x09, 0xC0, 0x08, 0x01, 0x80, 0x01, 0x01, 0x42, 0x00, 0x00, 0x00 };
+    nano_decode_event(muted, sizeof(muted), &ev); CHECK(ev.kind == NANO_EV_SETTINGS && ev.outputs_muted);
+    const uint8_t on[] = { 0x06, 0xC0, 0x08, 0x01, 0x42, 0x00, 0x00, 0x00 };
+    nano_decode_event(on, sizeof(on), &ev); CHECK(ev.kind == NANO_EV_SETTINGS && !ev.outputs_muted);
     CHECK(nano_lookup_fx_model("A51F") && nano_lookup_fx_model("A51F")->category == NANO_CAT_UTILITY_EQ);
     CHECK(nano_lookup_fx_model("ZZ") == NULL && nano_lookup_fx_model("") == NULL);
     CHECK(nano_category_color(NANO_CAT_DELAY) == 0x00F0D8);

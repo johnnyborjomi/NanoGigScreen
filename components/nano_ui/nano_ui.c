@@ -67,6 +67,9 @@ static bool s_tile_present[NANO_FX_SLOT_COUNT];
 static bool s_tile_on[NANO_FX_SLOT_COUNT];
 static uint8_t s_preset;
 static uint8_t s_per_bank = 4;
+static nano_label_style_t s_label_style = NANO_LABEL_NUMBER_LETTER;
+static lv_obj_t *s_mute_badge;
+static bool s_outputs_muted;
 /* Footswitch badges (web app: IA / IIA yellow, IB / IIB indigo), shown under the bank label. */
 static lv_obj_t *s_fs_badges[4];
 static uint8_t s_footswitch[4];
@@ -81,7 +84,9 @@ static bool s_link_enabled = true;
 static lv_point_t s_press_point;
 
 /* menu / settings / tuner */
-static lv_obj_t *s_link_btn_label, *s_bank_value;
+static lv_obj_t *s_link_btn_label, *s_bank_value, *s_style_seg[3], *s_style_hint, *s_mute_toggle, *s_mute_knob;
+
+
 static lv_obj_t *s_tuner_note, *s_tuner_cents, *s_tuner_bar, *s_tuner_verdict, *s_tuner_mute;
 static bool s_tuner_muted;
 
@@ -171,6 +176,72 @@ static const lv_font_t *tile_font(const char *text, int32_t max_w)
     return &montserrat_medium_12;
 }
 
+/* ---- pager: a left column with up / down buttons and a rotated "Page n/m" ---- */
+
+#define PAGER_W 36
+#define PAGER_BTN_H 40
+#define PAGER_MAX_PAGES 4
+
+typedef struct {
+    lv_obj_t *up, *down, *label;
+    lv_obj_t *pages[PAGER_MAX_PAGES];
+    int count, current;
+} pager_t;
+
+static void pager_show(pager_t *p, int idx)
+{
+    if (idx < 0 || idx >= p->count) return;
+    p->current = idx;
+    for (int i = 0; i < p->count; i++) lv_obj_set_hidden(p->pages[i], i != idx);
+    /* A single page needs no column (the page keeps whatever x it was given). */
+    bool solo = p->count <= 1;
+    lv_obj_set_hidden(p->up, solo);
+    lv_obj_set_hidden(p->down, solo);
+    lv_obj_set_hidden(p->label, solo);
+    char t[24];
+    snprintf(t, sizeof(t), "Page %u/%u", (unsigned)(idx + 1) & 0xff, (unsigned)p->count & 0xff);
+    lv_label_set_text(p->label, t);
+    /* Ends of the range: dim the arrow that goes nowhere. */
+    lv_obj_set_style_opa(p->up, idx == 0 ? LV_OPA_30 : LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(p->down, idx == p->count - 1 ? LV_OPA_30 : LV_OPA_COVER, 0);
+}
+
+static void on_pager_step(lv_event_t *e)
+{
+    pager_t *p = (pager_t *)lv_event_get_user_data(e);
+    int delta = lv_event_get_target_obj(e) == p->up ? -1 : 1;
+    pager_show(p, p->current + delta);
+}
+
+/* Column at the left edge from y to y + h; pages are added with pager_add_page and shown one at a time. */
+static void pager_create(pager_t *p, lv_obj_t *parent, int32_t y, int32_t h)
+{
+    memset(p, 0, sizeof(*p));
+    p->up = make_button(parent, EDGE_X, y, PAGER_W, PAGER_BTN_H, LV_SYMBOL_UP, &lv_font_montserrat_14, C_PANEL, C_MUTED, on_pager_step, p);
+    lv_obj_add_event_cb(p->up, on_pressed, LV_EVENT_PRESSED, NULL);
+    p->down = make_button(parent, EDGE_X, y + h - PAGER_BTN_H, PAGER_W, PAGER_BTN_H, LV_SYMBOL_DOWN, &lv_font_montserrat_14, C_PANEL, C_MUTED, on_pager_step, p);
+    lv_obj_add_event_cb(p->down, on_pressed, LV_EVENT_PRESSED, NULL);
+    /* The label is laid out horizontally, then rotated 90° counter-clockwise about its centre. */
+    p->label = make_label(parent, &montserrat_medium_12, C_MUTED);
+    lv_label_set_text(p->label, "Page 1/1");
+    lv_obj_set_style_transform_pivot_x(p->label, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(p->label, LV_PCT(50), 0);
+    lv_obj_set_style_transform_rotation(p->label, 2700, 0);
+    lv_obj_update_layout(p->label);
+    lv_obj_set_pos(p->label, EDGE_X + PAGER_W / 2 - lv_obj_get_width(p->label) / 2, y + h / 2 - lv_obj_get_height(p->label) / 2);
+}
+
+static lv_obj_t *pager_add_page(pager_t *p, lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h)
+{
+    if (p->count >= PAGER_MAX_PAGES) return NULL;
+    lv_obj_t *page = make_box(parent, x, y, w, h, C_BG);
+    p->pages[p->count++] = page;
+    pager_show(p, p->current);
+    return page;
+}
+
+static pager_t s_settings_pager;
+
 /* ---- callbacks ------------------------------------------------------------ */
 
 static void on_prev(lv_event_t *e) { (void)e; if (s_cb.on_prev_preset) s_cb.on_prev_preset(); }
@@ -232,6 +303,41 @@ static void set_bank_value_text(void)
     lv_label_set_text(s_bank_value, t);
 }
 
+static void refresh_style_seg(void)
+{
+    static const char *const HINTS[3] = { "Mvave Chocolate", "Other MIDI controllers", "As on the Nano Cortex" };
+    for (int i = 0; i < 3; i++) {
+        bool sel = (int)s_label_style == i;
+        lv_obj_set_style_bg_color(s_style_seg[i], lv_color_hex(sel ? C_ACCENT : C_PANEL), 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(s_style_seg[i], 0), lv_color_hex(sel ? C_FX_TEXT : C_TEXT), 0);
+    }
+    lv_label_set_text(s_style_hint, HINTS[s_label_style < 3 ? s_label_style : 0]);
+}
+
+static void on_style_clicked(lv_event_t *e)
+{
+    uint8_t style = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (style > NANO_LABEL_NUMERIC || style == s_label_style) return;
+    s_label_style = (nano_label_style_t)style;
+    refresh_style_seg();
+    if (s_cb.on_label_style) s_cb.on_label_style(style);
+}
+
+static void refresh_mute(void)
+{
+    lv_obj_set_hidden(s_mute_badge, !s_outputs_muted);
+    lv_obj_set_style_bg_color(s_mute_toggle, lv_color_hex(s_outputs_muted ? C_ERROR : C_OFF), 0);
+    lv_obj_align(s_mute_knob, s_outputs_muted ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID, s_outputs_muted ? -3 : 3, 0);
+}
+
+static void on_mute_toggle_clicked(lv_event_t *e)
+{
+    (void)e;
+    s_outputs_muted = !s_outputs_muted; /* optimistic; the pedal's settings reply confirms */
+    refresh_mute();
+    if (s_cb.on_outputs_mute) s_cb.on_outputs_mute(s_outputs_muted);
+}
+
 static void on_bank_step(lv_event_t *e)
 {
     int delta = (int)(intptr_t)lv_event_get_user_data(e);
@@ -253,8 +359,15 @@ static void build_main(lv_obj_t *scr)
     s_status_dot = make_dot(s_main, 8, 8, 8);
     s_status = make_label(s_main, &lv_font_montserrat_12, C_MUTED);
     lv_obj_set_pos(s_status, 22, 5);
-    lv_obj_set_width(s_status, 140);
+    lv_obj_set_size(s_status, 112, lv_font_get_line_height(&lv_font_montserrat_12)); /* one line: LONG_DOT needs a fixed height */
     lv_label_set_long_mode(s_status, LV_LABEL_LONG_DOT);
+    /* Outputs 1/2 muted (Cortex Cloud's global switch): a red badge you cannot miss on stage. */
+    s_mute_badge = make_box(s_main, 138, 3, 50, 16, C_ERROR);
+    lv_obj_set_style_radius(s_mute_badge, 4, 0);
+    lv_obj_t *mute_l = make_label(s_mute_badge, &montserrat_medium_10, C_FX_TEXT);
+    lv_label_set_text(mute_l, "MUTED");
+    lv_obj_center(mute_l);
+    lv_obj_set_hidden(s_mute_badge, true);
     s_tempo = make_label(s_main, &lv_font_montserrat_12, C_ON);
     lv_obj_set_pos(s_tempo, 190, 5);
     lv_obj_set_width(s_tempo, 80);
@@ -327,23 +440,29 @@ static void build_main(lv_obj_t *scr)
 
 /* ---- menu / settings / tuner views --------------------------------------- */
 
-static lv_obj_t *make_overlay(lv_obj_t *scr, const char *title)
+/* Full-screen view with a title bar: "<" back to the menu (when `back`), the title, "x" to the gig view. */
+static lv_obj_t *make_overlay(lv_obj_t *scr, const char *title, bool back)
 {
     lv_obj_t *o = make_box(scr, 0, 0, SCREEN_W, SCREEN_H, C_BG);
     lv_obj_add_event_cb(o, on_pressed, LV_EVENT_PRESSED, NULL);
+    if (back) {
+        lv_obj_t *b = make_button(o, 0, 0, 44, TOP_H + 4, LV_SYMBOL_LEFT, &lv_font_montserrat_14, C_BG, C_MUTED, on_back_to_menu, NULL);
+        lv_obj_add_event_cb(b, on_pressed, LV_EVENT_PRESSED, NULL);
+        lv_obj_set_ext_click_area(b, 6);
+    }
     lv_obj_t *t = make_label(o, &lv_font_montserrat_14, C_MUTED);
     lv_label_set_text(t, title);
-    lv_obj_set_pos(t, 12, 8);
+    lv_obj_set_pos(t, back ? 40 : 12, 8);
     lv_obj_t *close = make_button(o, SCREEN_W - 44, 0, 44, TOP_H + 4, LV_SYMBOL_CLOSE, &lv_font_montserrat_14, C_BG, C_MUTED, on_close, NULL);
     lv_obj_set_ext_click_area(close, 6);
     lv_obj_set_hidden(o, true);
     return o;
 }
 
-static lv_obj_t *menu_item(lv_obj_t *parent, int row, const char *text, lv_event_cb_t cb, lv_obj_t **label_out)
+static lv_obj_t *menu_item(lv_obj_t *parent, int row, const char *text, uint32_t color, lv_event_cb_t cb, lv_obj_t **label_out)
 {
     const int32_t h = 44, gap = 6, y0 = 30;
-    lv_obj_t *b = make_button(parent, 12, y0 + row * (h + gap), SCREEN_W - 24, h, text, &lv_font_montserrat_20, C_PANEL, C_TEXT, cb, NULL);
+    lv_obj_t *b = make_button(parent, 12, y0 + row * (h + gap), SCREEN_W - 24, h, text, &lv_font_montserrat_20, C_PANEL, color, cb, NULL);
     lv_obj_add_event_cb(b, on_pressed, LV_EVENT_PRESSED, NULL);
     if (label_out) *label_out = lv_obj_get_child(b, 0);
     return b;
@@ -351,38 +470,84 @@ static lv_obj_t *menu_item(lv_obj_t *parent, int row, const char *text, lv_event
 
 static void build_menu(lv_obj_t *scr)
 {
-    s_menu = make_overlay(scr, "NanoGig Screen");
-    menu_item(s_menu, 0, LV_SYMBOL_AUDIO "  Tuner", on_open_tuner, NULL);
-    menu_item(s_menu, 1, LV_SYMBOL_SETTINGS "  Settings", on_open_settings, NULL);
-    menu_item(s_menu, 2, LV_SYMBOL_BLUETOOTH "  Disconnect", on_link_toggle, &s_link_btn_label);
-    menu_item(s_menu, 3, LV_SYMBOL_LOOP "  Tempo", on_open_tempo, NULL);
+    s_menu = make_overlay(scr, "NanoGig Screen", false);
+    /* One colour per item so a row is found without reading it. */
+    menu_item(s_menu, 0, LV_SYMBOL_BLUETOOTH "  Disconnect", C_ERROR, on_link_toggle, &s_link_btn_label);
+    menu_item(s_menu, 1, LV_SYMBOL_SETTINGS "  Settings", C_WARN, on_open_settings, NULL);
+    menu_item(s_menu, 2, LV_SYMBOL_LOOP "  Tempo", C_ON, on_open_tempo, NULL);
+    menu_item(s_menu, 3, LV_SYMBOL_AUDIO "  Tuner", 0xBFE3FF, on_open_tuner, NULL);
+}
+
+/* One settings row: caption at the left, the control right-aligned to SETTING_RIGHT (page coordinates). */
+#define SETTING_X 12 /* one page today: the pager hides its column; add PAGER_W + 8 when a second page comes */
+#define SETTING_RIGHT (SCREEN_W - 12 - SETTING_X)
+#define SETTING_ROW_H 34
+
+static lv_obj_t *setting_caption(lv_obj_t *parent, int32_t y, const char *text)
+{
+    lv_obj_t *l = make_label(parent, &lv_font_montserrat_14, C_TEXT);
+    lv_label_set_text(l, text);
+    lv_obj_set_pos(l, 0, y + (SETTING_ROW_H - lv_font_get_line_height(&lv_font_montserrat_14)) / 2);
+    return l;
 }
 
 static void build_settings(lv_obj_t *scr)
 {
-    s_settings = make_overlay(scr, "Settings");
-    lv_obj_t *l = make_label(s_settings, &lv_font_montserrat_14, C_TEXT);
-    lv_label_set_text(l, "Presets per bank");
-    lv_obj_set_pos(l, 12, 44);
-    lv_obj_t *hint = make_label(s_settings, &lv_font_montserrat_12, C_MUTED);
-    lv_label_set_text(hint, "4 = Mvave Chocolate (1A..1D), 8 = A..H");
-    lv_obj_set_pos(hint, 12, 64);
-    lv_obj_t *minus = make_button(s_settings, 12, 92, 56, 48, LV_SYMBOL_MINUS, &lv_font_montserrat_20, C_PANEL, C_TEXT, on_bank_step, (void *)(intptr_t)-1);
-    lv_obj_add_event_cb(minus, on_pressed, LV_EVENT_PRESSED, NULL);
-    s_bank_value = make_label(s_settings, &lv_font_montserrat_32, C_TEXT);
-    lv_obj_set_pos(s_bank_value, 76, 98);
-    lv_obj_set_width(s_bank_value, 56);
-    lv_obj_set_style_text_align(s_bank_value, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_t *plus = make_button(s_settings, 140, 92, 56, 48, LV_SYMBOL_PLUS, &lv_font_montserrat_20, C_PANEL, C_TEXT, on_bank_step, (void *)(intptr_t)1);
+    s_settings = make_overlay(scr, "Settings", true);
+    /* Pager under the title bar (its column only shows once there is more than one page). */
+    const int32_t top = TOP_H + 6, page_h = SCREEN_H - top - 6;
+    pager_create(&s_settings_pager, s_settings, top, page_h);
+    lv_obj_t *page1 = pager_add_page(&s_settings_pager, s_settings, SETTING_X, top, SCREEN_W - SETTING_X, page_h);
+
+    /* Page 1. Presets per bank:  [-] 4 [+] */
+    int32_t y = 4;
+    setting_caption(page1, y, "Presets per bank");
+    lv_obj_t *plus = make_button(page1, SETTING_RIGHT - 44, y, 44, SETTING_ROW_H, LV_SYMBOL_PLUS, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_bank_step, (void *)(intptr_t)1);
     lv_obj_add_event_cb(plus, on_pressed, LV_EVENT_PRESSED, NULL);
+    s_bank_value = make_label(page1, &lv_font_montserrat_20, C_TEXT);
+    lv_obj_set_pos(s_bank_value, SETTING_RIGHT - 44 - 40, y + (SETTING_ROW_H - lv_font_get_line_height(&lv_font_montserrat_20)) / 2);
+    lv_obj_set_width(s_bank_value, 40);
+    lv_obj_set_style_text_align(s_bank_value, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_t *minus = make_button(page1, SETTING_RIGHT - 44 - 40 - 44, y, 44, SETTING_ROW_H, LV_SYMBOL_MINUS, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_bank_step, (void *)(intptr_t)-1);
+    lv_obj_add_event_cb(minus, on_pressed, LV_EVENT_PRESSED, NULL);
     set_bank_value_text();
-    lv_obj_t *back = make_button(s_settings, 12, SCREEN_H - 56, SCREEN_W - 24, 44, "Back", &lv_font_montserrat_20, C_PANEL, C_TEXT, on_back_to_menu, NULL);
-    lv_obj_add_event_cb(back, on_pressed, LV_EVENT_PRESSED, NULL);
+
+    /* Preset label style: [1B] [A2] [1..64] with a one-line meaning under it. */
+    y = 52;
+    setting_caption(page1, y, "Preset label");
+    static const char *const SEG[3] = { "1B", "A2", "1..64" };
+    const int32_t seg_w = 54, seg_gap = 4;
+    for (int i = 0; i < 3; i++) {
+        int32_t x = SETTING_RIGHT - (3 - i) * seg_w - (2 - i) * seg_gap;
+        s_style_seg[i] = make_button(page1, x, y, seg_w, SETTING_ROW_H, SEG[i], &lv_font_montserrat_14, C_PANEL, C_TEXT, on_style_clicked, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(s_style_seg[i], on_pressed, LV_EVENT_PRESSED, NULL);
+        lv_obj_set_style_radius(s_style_seg[i], 8, 0);
+    }
+    s_style_hint = make_label(page1, &lv_font_montserrat_12, C_MUTED);
+    lv_obj_set_pos(s_style_hint, SETTING_RIGHT - 3 * seg_w - 2 * seg_gap, y + SETTING_ROW_H + 3);
+    lv_obj_set_width(s_style_hint, 3 * seg_w + 2 * seg_gap);
+    lv_obj_set_style_text_align(s_style_hint, LV_TEXT_ALIGN_CENTER, 0);
+    refresh_style_seg();
+
+    /* Mute outputs 1/2: a switch, red while muted (it silences the whole rig). */
+    y = 118;
+    setting_caption(page1, y, "Mute outputs 1/2");
+    s_mute_toggle = make_box(page1, SETTING_RIGHT - 52, y + (SETTING_ROW_H - 28) / 2, 52, 28, C_OFF);
+    lv_obj_set_style_radius(s_mute_toggle, 14, 0);
+    lv_obj_set_clickable(s_mute_toggle, true);
+    lv_obj_set_ext_click_area(s_mute_toggle, 10);
+    lv_obj_add_event_cb(s_mute_toggle, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_mute_toggle, on_mute_toggle_clicked, LV_EVENT_CLICKED, NULL);
+    s_mute_knob = make_box(s_mute_toggle, 0, 0, 22, 22, C_TEXT);
+    lv_obj_set_style_radius(s_mute_knob, LV_RADIUS_CIRCLE, 0);
+    refresh_mute();
+
+    pager_show(&s_settings_pager, 0);
 }
 
 static void build_tuner(lv_obj_t *scr)
 {
-    s_tuner = make_overlay(scr, "Tuner");
+    s_tuner = make_overlay(scr, "Tuner", true);
     s_tuner_note = make_label(s_tuner, &lv_font_montserrat_40, C_TEXT);
     lv_obj_set_width(s_tuner_note, SCREEN_W);
     lv_obj_set_style_text_align(s_tuner_note, LV_TEXT_ALIGN_CENTER, 0);
@@ -416,7 +581,7 @@ static void build_tuner(lv_obj_t *scr)
 
 static void build_tempo(lv_obj_t *scr)
 {
-    s_tempo_view = make_overlay(scr, "Tempo");
+    s_tempo_view = make_overlay(scr, "Tempo", true);
     s_tempo_big = make_label(s_tempo_view, &lv_font_montserrat_40, C_ON);
     lv_obj_set_width(s_tempo_big, SCREEN_W);
     lv_obj_set_style_text_align(s_tempo_big, LV_TEXT_ALIGN_CENTER, 0);
@@ -676,6 +841,24 @@ void nano_ui_set_bank_size(uint8_t per_bank)
     set_bank_value_text();
 }
 
+void nano_ui_set_label_style(uint8_t style)
+{
+    if (style > NANO_LABEL_NUMERIC) return;
+    s_label_style = (nano_label_style_t)style;
+    refresh_style_seg();
+}
+
+void nano_ui_set_outputs_muted(bool muted)
+{
+    s_outputs_muted = muted;
+    refresh_mute();
+}
+
+void nano_ui_settings_page(int index)
+{
+    pager_show(&s_settings_pager, index);
+}
+
 static void layout_preset_row(void)
 {
     /* Which footswitch badges apply to the shown preset. */
@@ -726,7 +909,7 @@ void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta)
 {
     s_preset = index;
     char label[8];
-    nano_preset_label(index, s_per_bank, label, sizeof(label));
+    nano_preset_label(index, s_per_bank, s_label_style, label, sizeof(label));
     lv_label_set_text(s_preset_label, label);
     lv_obj_set_style_text_color(s_preset_label, lv_color_hex(SLOT_COLORS[(index % s_per_bank) & 7]), 0);
     const char *name = (meta && index < NANO_PRESET_COUNT) ? meta->presets[index].name : "";

@@ -103,6 +103,13 @@ size_t nano_build_tempo_exit(uint8_t *out, size_t cap, float bpm);
 /* Tuner on: `0F C0 20 01 2D <f32 Hz> 30 01 38 <mute> 7F 00 00 00`. */
 size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mute);
 
+/*
+ * Mute / unmute outputs 1/2 (Cortex Cloud's global "Mute Outputs 1/2"): `08 C0 08 01 68 <1 mute / 0 on>
+ * 43 00 00 00`, byte-exact from a Cortex Cloud capture (2026-09-15; polarity checked by ear). The pedal
+ * acks with type 0x44 and the settings reply's field 16 mirrors the value. Always 10 bytes.
+ */
+size_t nano_build_outputs_mute(uint8_t *out, size_t cap, bool mute);
+
 #ifdef __cplusplus
 }
 #endif

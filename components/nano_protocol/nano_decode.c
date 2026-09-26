@@ -216,7 +216,12 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
         return;
     }
     case NANO_MSG_SETTINGS:
+        /* 60-byte reply to NANO_REQ_SETTINGS; field 16 = 1 while outputs 1/2 are muted, absent while on. */
         out->kind = NANO_EV_SETTINGS;
+        out->outputs_muted = nano_first_varint(body, plen, 16, 0) == 1;
+        return;
+    case NANO_MSG_OUTPUTS_MUTE_ACK:
+        out->kind = NANO_EV_OUTPUTS_MUTE_ACK;
         return;
     case NANO_MSG_TAP_TEMPO: {
         /* `0D C0 08 01 18 01 2D <f32 BPM> 91 00 00 00` per tap; `0B C0 08 01 2D <f32> 91 00 00 00` on exit
@@ -233,14 +238,42 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
     }
 }
 
-void nano_preset_label(uint8_t preset_index, uint8_t per_bank, char *out, size_t cap)
+/* A..Z, then AA, AB, ...: any bank count over 64 presets gets a name. */
+static void letters(unsigned n, char *out, size_t cap)
+{
+    char tmp[4];
+    size_t k = 0;
+    int v = (int)n;
+    do {
+        tmp[k++] = (char)('A' + v % 26);
+        v = v / 26 - 1;
+    } while (v >= 0 && k < sizeof(tmp));
+    size_t i = 0;
+    while (k > 0 && i + 1 < cap) out[i++] = tmp[--k];
+    out[i] = '\0';
+}
+
+void nano_preset_label(uint8_t preset_index, uint8_t per_bank, nano_label_style_t style, char *out, size_t cap)
 {
     if (per_bank == 0) per_bank = 4;
     if (preset_index >= NANO_PRESET_COUNT) {
         snprintf(out, cap, "-");
         return;
     }
-    unsigned bank = preset_index / per_bank + 1;
+    unsigned bank = preset_index / per_bank;
     unsigned slot = preset_index % per_bank;
-    snprintf(out, cap, "%u%c", bank, (char)('A' + slot));
+    char l[4];
+    switch (style) {
+    case NANO_LABEL_LETTER_NUMBER:
+        letters(bank, l, sizeof(l));
+        snprintf(out, cap, "%s%u", l, slot + 1);
+        return;
+    case NANO_LABEL_NUMERIC:
+        snprintf(out, cap, "%u", (unsigned)preset_index + 1);
+        return;
+    default:
+        letters(slot, l, sizeof(l));
+        snprintf(out, cap, "%u%s", bank + 1, l);
+        return;
+    }
 }

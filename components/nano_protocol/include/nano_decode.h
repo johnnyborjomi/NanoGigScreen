@@ -76,7 +76,8 @@ typedef enum {
     NANO_EV_EXPRESSION,        /* position 0..254 */
     NANO_EV_TUNER_PITCH,       /* note, cents, in tune */
     NANO_EV_TUNER_ACK,         /* on/off + reference */
-    NANO_EV_SETTINGS,
+    NANO_EV_SETTINGS,          /* device settings reply (type 0x42): outputs_muted */
+    NANO_EV_OUTPUTS_MUTE_ACK,  /* ack to the outputs-mute write (type 0x44) */
     NANO_EV_TAP_TEMPO,         /* tempo while tapping / when the tap tempo mode ends (2026-09-26) */
 } nano_event_kind_t;
 
@@ -94,13 +95,21 @@ typedef struct {
     bool tap_active;           /* TAP_TEMPO: field 3 = 1 while the mode is on; absent when it just ended */
     float tempo_bpm;           /* TAP_TEMPO: field 5 */
     float reference_hz;        /* TUNER_ACK, 0 when absent */
+    bool outputs_muted;        /* SETTINGS field 16 (absent = outputs on) */
 } nano_event_t;
 
 /* Decode a single-packet live message (full packet including the 2-byte header). */
 void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out);
 
-/* Preset label in the Mvave Chocolate style ("3B": bank number + slot letter, 4 per bank). */
-void nano_preset_label(uint8_t preset_index, uint8_t per_bank, char *out, size_t cap);
+/* How the preset row names a preset (the pedal itself only counts 1..64). */
+typedef enum {
+    NANO_LABEL_NUMBER_LETTER = 0, /* "3B": bank number + slot letter (Mvave Chocolate) */
+    NANO_LABEL_LETTER_NUMBER,     /* "B2": bank letter + slot number (other MIDI controllers) */
+    NANO_LABEL_NUMERIC,           /* "10": the preset number, as on the Nano Cortex */
+} nano_label_style_t;
+
+/* Preset label for a zero-based index: index 9 → "3B" / "B2" (4 per bank) / "10". */
+void nano_preset_label(uint8_t preset_index, uint8_t per_bank, nano_label_style_t style, char *out, size_t cap);
 
 #ifdef __cplusplus
 }
