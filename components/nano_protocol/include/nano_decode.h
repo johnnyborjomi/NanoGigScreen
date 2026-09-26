@@ -60,6 +60,7 @@ typedef struct {
     uint8_t footswitch[4];             /* IA, IB, IIA, IIB = fields 14, 15, 38, 39 */
     char firmware[16];                 /* field 24, "2.2.1" */
     float tempo_bpm;                   /* field 56, 0 when absent */
+    float tuner_reference_hz;          /* field 46 (440.0 on the user's pedal), 0 when absent */
     uint8_t amp[5];                    /* gain, level, bass, mid, treble = fields 3..7 */
 } nano_state_t;
 

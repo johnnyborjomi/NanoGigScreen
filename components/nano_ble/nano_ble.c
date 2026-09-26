@@ -30,6 +30,7 @@ static uint16_t s_svc_start, s_svc_end;
 static uint16_t s_c304_handle, s_c305_handle, s_c305_def_handle, s_c305_cccd;
 static uint16_t s_c305_end; /* last handle that can hold a c305 descriptor */
 static uint16_t s_mtu;
+static volatile bool s_enabled = true;
 
 static void set_status(nano_ble_status_t st, const char *detail)
 {
@@ -53,6 +54,10 @@ static int gap_event(struct ble_gap_event *event, void *arg);
 
 static void start_scan(void)
 {
+    if (!s_enabled) {
+        set_status(NANO_BLE_IDLE, "Disconnected");
+        return;
+    }
     struct ble_gap_disc_params p = {
         .passive = 0, /* active: the name may only be in the scan response */
         .filter_duplicates = 1,
@@ -235,7 +240,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGW(TAG, "disconnected: reason %d", event->disconnect.reason);
         reset_link();
-        set_status(NANO_BLE_SCANNING, "Link lost");
+        if (s_enabled) set_status(NANO_BLE_SCANNING, "Link lost");
         start_scan();
         return 0;
     case BLE_GAP_EVENT_DISC_COMPLETE:
@@ -307,6 +312,27 @@ nano_ble_status_t nano_ble_status(void)
 uint16_t nano_ble_mtu(void)
 {
     return s_mtu;
+}
+
+void nano_ble_set_enabled(bool enabled)
+{
+    if (s_enabled == enabled) return;
+    s_enabled = enabled;
+    if (enabled) {
+        start_scan();
+        return;
+    }
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM); /* DISCONNECT event follows */
+    } else {
+        ble_gap_disc_cancel();
+        set_status(NANO_BLE_IDLE, "Disconnected");
+    }
+}
+
+bool nano_ble_enabled(void)
+{
+    return s_enabled;
 }
 
 int nano_ble_write(const uint8_t *data, size_t len)

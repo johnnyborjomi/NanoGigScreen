@@ -65,13 +65,22 @@ static bool metadata_from_top_level(const uint8_t *body, size_t len, nano_metada
     return out->preset_record_count > 0;
 }
 
+/*
+ * A real metadata dump carries all 64 preset records and is ~17 KB. A state dump is under
+ * 1 KB and, re-parsed from a shifted offset, can produce one bogus "record" (seen 2026-09-26:
+ * it wiped the name cache), so both checks are required before anything is treated as metadata.
+ */
+#define NANO_METADATA_MIN_RECORDS 2
+#define NANO_METADATA_MIN_LEN 2048
+
 bool nano_decode_metadata(const uint8_t *body, size_t len, nano_metadata_t *out)
 {
-    if (metadata_from_top_level(body, len, out)) return true;
+    if (len < NANO_METADATA_MIN_LEN) return false;
+    if (metadata_from_top_level(body, len, out) && out->preset_record_count >= NANO_METADATA_MIN_RECORDS) return true;
     /* Scan past a partial / non-protobuf prefix (rixrix FR-18). */
     size_t limit = len < 64 ? len : 64;
     for (size_t start = 1; start < limit; start++) {
-        if (metadata_from_top_level(body + start, len - start, out)) return true;
+        if (metadata_from_top_level(body + start, len - start, out) && out->preset_record_count >= NANO_METADATA_MIN_RECORDS) return true;
     }
     return false;
 }
@@ -142,6 +151,8 @@ bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out)
     nano_first_string(d, plen, 24, out->firmware, sizeof(out->firmware));
     float bpm;
     if (nano_first_fixed32_float(d, plen, 56, &bpm) && bpm >= 20.0f && bpm <= 400.0f) out->tempo_bpm = bpm;
+    float ref;
+    if (nano_first_fixed32_float(d, plen, 46, &ref) && ref >= 400.0f && ref <= 480.0f) out->tuner_reference_hz = ref;
     return true;
 }
 

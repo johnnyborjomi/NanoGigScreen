@@ -50,8 +50,8 @@ bool nano_has_field(const uint8_t *data, size_t len, uint32_t field);
 bool nano_first_bytes(const uint8_t *data, size_t len, uint32_t field, const uint8_t **out, size_t *out_len);
 bool nano_first_fixed32_float(const uint8_t *data, size_t len, uint32_t field, float *out);
 /*
- * Copy the first printable-ASCII string field into `out` (NUL-terminated,
- * truncated to cap-1). Non-printable payloads are skipped like the TS port does.
+ * Copy the first text field (no control characters; UTF-8 allowed) into `out`
+ * (NUL-terminated, truncated to cap-1). Binary payloads are skipped.
  * Returns the copied length; `out` is "" when nothing matched.
  */
 size_t nano_first_string(const uint8_t *data, size_t len, uint32_t field, char *out, size_t cap);

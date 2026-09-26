@@ -6,3 +6,5 @@ dependencies.lock
 components/nano_protocol/test/build/
 .vscode/
 .DS_Store
+tools/preview/build/
+tools/preview/out/

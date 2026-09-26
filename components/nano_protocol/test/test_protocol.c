@@ -127,6 +127,7 @@ static void test_state_single(void)
     CHECK_STR(s.ir_short_name, "110 US PRN C10R");
     CHECK_STR(s.firmware, "2.2.1");
     CHECK(s.tempo_bpm == 120.0f);
+    CHECK(s.tuner_reference_hz == 440.0f); /* F5 02 00 00 DC 43 */
     CHECK(s.footswitch[0] == 3 && s.footswitch[1] == 5 && s.footswitch[2] == 20 && s.footswitch[3] == 14); /* 70 03, 78 05, B0 02 14, B8 02 0E */
     CHECK_STR(s.fx[0].id, "17");
     CHECK(s.fx[0].model && strcmp(s.fx[0].model->name, "Exotic Z Boost") == 0 && s.fx[0].model->category == NANO_CAT_OVERDRIVE);
@@ -286,6 +287,11 @@ static size_t build_metadata(uint8_t *out, size_t cap)
         out[n++] = 0x8A; out[n++] = 0x01; out[n++] = (uint8_t)r; memcpy(out + n, rec, r); n += r;
     }
     out[n++] = 0x9A; out[n++] = 0x01; out[n++] = 5; out[n++] = 0x0A; out[n++] = 3; memcpy(out + n, "IR1", 3); n += 3;
+    /* Pad to a realistic size with an unknown bytes field (field 100), as the real dump is ~17 KB. */
+    size_t pad = 2100;
+    out[n++] = 0xA2; out[n++] = 0x06; /* field 100, wire 2 */
+    out[n++] = (uint8_t)(0x80 | (pad & 0x7f)); out[n++] = (uint8_t)(pad >> 7);
+    memset(out + n, 'x', pad); n += pad;
     out[n++] = 0x02; out[n++] = 0; out[n++] = 0; out[n++] = 0; /* trailer */
     return n;
 }
@@ -293,7 +299,7 @@ static size_t build_metadata(uint8_t *out, size_t cap)
 static void test_metadata(void)
 {
     printf("metadata\n");
-    static uint8_t msg[512];
+    static uint8_t msg[4096];
     size_t n = build_metadata(msg, sizeof(msg));
     static nano_metadata_t m;
     CHECK(nano_decode_metadata(msg, n, &m));
@@ -309,14 +315,20 @@ static void test_metadata(void)
     CHECK(m.ir_count == 1);
     CHECK_STR(m.irs[0], "IR1");
     /* A partial prefix is scanned past. */
-    static uint8_t shifted[520];
+    static uint8_t shifted[4100];
     shifted[0] = 0xFF; shifted[1] = 0x00;
     memcpy(shifted + 2, msg, n);
     CHECK(nano_decode_metadata(shifted, n + 2, &m) && m.preset_record_count == 3);
-    /* A state dump has no preset records. */
+    /* A state dump is never metadata, even when a shifted parse yields one bogus record. */
     uint8_t pkt[512];
     n = from_hex(HW_STATE_SINGLE, pkt, sizeof(pkt));
     CHECK(!nano_decode_metadata(pkt + 2, n - 2, &m));
+    /* A large message with a single record is not metadata either. */
+    static uint8_t one[4096];
+    size_t k = 0;
+    one[k++] = 0x92; one[k++] = 0x01; one[k++] = 4; one[k++] = 0x0A; one[k++] = 2; one[k++] = 'A'; one[k++] = 'b';
+    one[k++] = 0xA2; one[k++] = 0x06; one[k++] = 0x90; one[k++] = 0x10; memset(one + k, 'x', 2064); k += 2064;
+    CHECK(!nano_decode_metadata(one, k, &m));
 }
 
 static void test_labels_and_models(void)

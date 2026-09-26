@@ -39,6 +39,7 @@ static const char *TAG = "nanogig";
 #define CONFIRM_MS 300
 #define NVS_NAMESPACE "nanogig"
 #define NVS_KEY_META "meta"
+#define NVS_KEY_BANK "bank"
 #define META_MAGIC 0x4E474D31u      /* "NGM1" */
 
 typedef struct {
@@ -46,13 +47,15 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
     char detail[32];
     uint8_t fx_slot;
     bool fx_on;
+    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect */
+    uint8_t value;  /* MSG_BANK_SIZE */
     packet_t pkt;
 } app_msg_t;
 
@@ -73,6 +76,9 @@ static bool s_state_valid;
 static bool s_meta_requested_this_link;
 static int64_t s_state_due_us;      /* 0 = no pending re-read */
 static int64_t s_state_sent_us;     /* when the last state request went out */
+static int64_t s_last_pitch_us;     /* last tuner reading; the tuner view clears after silence */
+static bool s_tuner_cleared = true;
+#define TUNER_SILENCE_US (600 * 1000)
 #define STATE_MIN_GAP_US (200 * 1000) /* a select's ack events also ask; one dump is enough */
 static bool s_link_ready;
 
@@ -91,6 +97,30 @@ static void meta_load(void)
     if (!s_meta_valid) memset(&s_meta_blob, 0, sizeof(s_meta_blob));
     ESP_LOGI(TAG, "metadata cache %s", s_meta_valid ? "loaded" : "empty");
 }
+
+static uint8_t bank_load(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 4;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_KEY_BANK, &v);
+        nvs_close(h);
+    }
+    return (v >= 2 && v <= 8) ? v : 4;
+}
+
+static void nvs_save_u8(const char *key, uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    uint8_t old = 0xff;
+    nvs_get_u8(h, key, &old);
+    if (old != v && nvs_set_u8(h, key, v) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
+}
+
+static void bank_save(uint8_t v) { nvs_save_u8(NVS_KEY_BANK, v); }
+
 
 static void meta_save(void)
 {
@@ -130,6 +160,10 @@ static void ui_on_toggle_fx(uint8_t slot, bool on)
     app_msg_t m = { .kind = MSG_TOGGLE_FX, .fx_slot = slot, .fx_on = on };
     xQueueSend(s_queue, &m, 0);
 }
+static void ui_on_toggle_gate(bool on) { app_msg_t m = { .kind = MSG_TOGGLE_GATE, .fx_on = on }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_tuner(bool on) { app_msg_t m = { .kind = MSG_TUNER, .flag = on }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_link(bool connect) { app_msg_t m = { .kind = MSG_LINK, .flag = connect }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_bank_size(uint8_t v) { app_msg_t m = { .kind = MSG_BANK_SIZE, .value = v }; xQueueSend(s_queue, &m, 0); }
 
 /* ---- requests ------------------------------------------------------------- */
 
@@ -189,6 +223,38 @@ static void toggle_fx(uint8_t slot, bool currently_on)
     }
 }
 
+/* Gate on/off: `0A C0 08 01 18 09 20 <0 on / 1 off> 1F 00 00 00` (verified 2026-09-12). */
+static void toggle_gate(bool currently_on)
+{
+    if (!s_link_ready || !s_state_valid) return;
+    uint8_t frame[12];
+    size_t n = nano_build_gate_bypass(frame, sizeof(frame), !currently_on);
+    if (n && nano_ble_write(frame, n) == 0) {
+        ESP_LOGI(TAG, "-> gate %s", currently_on ? "off" : "on");
+        s_state.gate_on = !currently_on;
+        if (lvgl_port_lock(50)) {
+            nano_ui_set_state(&s_state, s_meta_valid ? &s_meta_blob.meta : NULL);
+            lvgl_port_unlock();
+        }
+        schedule_state(CONFIRM_MS);
+    }
+}
+
+/* Tuner on `0F C0 20 01 2D <f32 Hz> 30 01 38 <mute> 7F 00 00 00` / off `06 C0 20 00 7F 00 00 00` (2026-09-19). */
+static void set_tuner(bool on)
+{
+    if (!s_link_ready) return;
+    if (on) {
+        float ref = (s_state_valid && s_state.tuner_reference_hz > 0) ? s_state.tuner_reference_hz : 440.0f;
+        uint8_t frame[17];
+        size_t n = nano_build_tuner_on(frame, sizeof(frame), ref, false);
+        if (n && nano_ble_write(frame, n) == 0) ESP_LOGI(TAG, "-> tuner on (%.1f Hz)", ref);
+        s_tuner_cleared = true;
+    } else if (nano_ble_write(NANO_REQ_TUNER_OFF, sizeof(NANO_REQ_TUNER_OFF)) == 0) {
+        ESP_LOGI(TAG, "-> tuner off");
+    }
+}
+
 /* ---- message handling ----------------------------------------------------- */
 
 static bool cache_contradicts_state(void)
@@ -215,6 +281,10 @@ static void on_state(const nano_state_t *st)
 static void on_metadata(const nano_metadata_t *m)
 {
     ESP_LOGI(TAG, "<- metadata: %u presets, %u captures, %u IRs", m->preset_record_count, m->capture_count, m->ir_count);
+    if (s_state_valid) {
+        const nano_preset_record_t *p = &m->presets[s_state.active_preset];
+        ESP_LOGI(TAG, "   record %u: name \"%s\" capture \"%s\" ir \"%s\" (state capture \"%s\")", s_state.active_preset + 1, p->name, p->capture_name, p->ir_short_name, s_state.capture_name);
+    }
     bool changed = !s_meta_valid || memcmp(&s_meta_blob.meta, m, sizeof(*m)) != 0;
     s_meta_blob.meta = *m;
     s_meta_valid = true;
@@ -230,7 +300,8 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     size_t plen = nano_split_trailer(body, len, &msg_type);
     if (packets > 1 || msg_type == NANO_MSG_DUMP) {
         if (!complete) ESP_LOGW(TAG, "unterminated %u-byte message flushed by timeout", (unsigned)len);
-        if (nano_decode_metadata(body, plen, s_meta_scratch)) {
+        /* Only a reply to our own metadata request can be metadata; the decoder also checks size / records. */
+        if (s_meta_requested_this_link && nano_decode_metadata(body, plen, s_meta_scratch)) {
             on_metadata(s_meta_scratch);
             return;
         }
@@ -269,6 +340,20 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         schedule_state(DEBOUNCE_MS);
         break;
     case NANO_EV_TUNER_PITCH:
+        s_last_pitch_us = esp_timer_get_time();
+        s_tuner_cleared = false;
+        if (lvgl_port_lock(20)) {
+            if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_set_tuner(ev.note, ev.cents, ev.in_tune);
+            lvgl_port_unlock();
+        }
+        break;
+    case NANO_EV_TUNER_ACK:
+        /* The pedal ended its tuner itself (footswitch): close our view without sending tuner-off. */
+        if (!ev.tuner_on && lvgl_port_lock(50)) {
+            if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_show(NANO_VIEW_MAIN);
+            lvgl_port_unlock();
+        }
+        break;
     case NANO_EV_EXPRESSION:
         break; /* not shown yet */
     default:
@@ -289,6 +374,10 @@ static void on_status(nano_ble_status_t status, const char *detail)
         s_link_ready = false;
         s_state_due_us = 0;
         nano_assembler_reset(&s_asm);
+        if (lvgl_port_lock(50)) {
+            if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_show(NANO_VIEW_MAIN);
+            lvgl_port_unlock();
+        }
     }
     cyd_led(!ready && status != NANO_BLE_CONNECTING, false, status == NANO_BLE_CONNECTING);
     if (lvgl_port_lock(100)) {
@@ -328,10 +417,34 @@ static void app_task(void *arg)
             case MSG_TOGGLE_FX:
                 toggle_fx(m.fx_slot, m.fx_on);
                 break;
+            case MSG_TUNER:
+                set_tuner(m.flag);
+                break;
+            case MSG_TOGGLE_GATE:
+                toggle_gate(m.fx_on);
+                break;
+            case MSG_LINK:
+                ESP_LOGI(TAG, "link %s", m.flag ? "enabled" : "disabled");
+                nano_ble_set_enabled(m.flag);
+                break;
+            case MSG_BANK_SIZE:
+                bank_save(m.value);
+                if (lvgl_port_lock(50)) {
+                    nano_ui_set_preset(s_state_valid ? s_state.active_preset : 0, s_meta_valid ? &s_meta_blob.meta : NULL);
+                    lvgl_port_unlock();
+                }
+                break;
             }
         }
         nano_assembler_tick(&s_asm, now_ms());
         if (s_link_ready && s_state_due_us && esp_timer_get_time() >= s_state_due_us) request_state();
+        if (!s_tuner_cleared && esp_timer_get_time() - s_last_pitch_us > TUNER_SILENCE_US) {
+            s_tuner_cleared = true;
+            if (lvgl_port_lock(20)) {
+                if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_set_tuner(NULL, 0, false);
+                lvgl_port_unlock();
+            }
+        }
     }
 }
 
@@ -349,11 +462,15 @@ void app_main(void)
         ESP_LOGE(TAG, "display init failed");
         return;
     }
-    nano_ui_callbacks_t ui_cb = { .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx };
+    nano_ui_callbacks_t ui_cb = {
+        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx,
+        .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
+        .on_toggle_gate = ui_on_toggle_gate,
+    };
     if (lvgl_port_lock(0)) {
         nano_ui_create(disp, &ui_cb);
+        nano_ui_set_bank_size(bank_load());
         nano_ui_set_status("Starting Bluetooth", false);
-        if (s_meta_valid) nano_ui_set_preset(0, &s_meta_blob.meta);
         nano_ui_set_stale(true);
         lvgl_port_unlock();
     }

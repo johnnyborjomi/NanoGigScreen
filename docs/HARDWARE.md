@@ -54,6 +54,9 @@ The firmware lights the LED red while scanning, blue while connecting, off when 
   both ranges onto the full 320×240; the driver's own swap / mirror flags stay off.
 - Colour order: `LCD_RGB_ELEMENT_ORDER_RGB` in esp_lcd. `BGR` swapped red and blue on this
   panel (the red "1A" bank label showed blue), although TFT_eSPI's CYD2USB setup says `TFT_BGR`.
+- Bug found on the pedal 2026-09-26: a state dump re-parsed from a shifted offset produced one
+  bogus preset record, was taken for a metadata dump and wiped the NVS name cache (every preset
+  then showed its capture name). Metadata now needs >= 2 records, >= 2 KB and a pending request.
 - First firmware flash 2026-09-26: screen, LED, Bluetooth link, state dump, footswitch events,
   preset select and FX toggles all worked. Touch taps must use the **press** point: the last
   sample before lift-off on this resistive panel drifts to a small X, which made every tap read

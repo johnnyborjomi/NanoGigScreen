@@ -35,6 +35,12 @@ int nano_ble_start(const nano_ble_callbacks_t *cb);
 nano_ble_status_t nano_ble_status(void);
 /* Write a command frame to c304 (with response). 0 on success, else a NimBLE error code. */
 int nano_ble_write(const uint8_t *data, size_t len);
+/*
+ * Enable (scan + connect, the default) or disable the link: disconnects and stops scanning so
+ * Cortex Cloud can take the pedal without powering the screen off. Callable from any task.
+ */
+void nano_ble_set_enabled(bool enabled);
+bool nano_ble_enabled(void);
 /* Negotiated ATT MTU (0 until connected). */
 uint16_t nano_ble_mtu(void);
 

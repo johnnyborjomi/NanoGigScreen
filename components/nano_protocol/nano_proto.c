@@ -151,10 +151,12 @@ bool nano_first_fixed32_float(const uint8_t *data, size_t len, uint32_t field, f
     return false;
 }
 
+/* Text = no control characters. Bytes >= 0x80 are allowed so UTF-8 names (Cortex Cloud lets
+ * users type them) survive; the display falls back to a blank glyph for what its font lacks. */
 static bool printable(const uint8_t *p, size_t n)
 {
     for (size_t i = 0; i < n; i++) {
-        if (p[i] < 0x20 || p[i] > 0x7e) return false;
+        if (p[i] < 0x20 || p[i] == 0x7f) return false;
     }
     return true;
 }

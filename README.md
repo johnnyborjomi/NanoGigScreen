@@ -8,8 +8,11 @@ and shows, with no phone on the floor:
 - the active preset's name in big type and its bank label (`3B`, Mvave Chocolate style)
 - the five FX blocks with their model names, lit in the Cortex Cloud category colours
 - the capture and IR names with on/off dots, gate state and tempo
-- preset switching: tap the left or right edge of the preset name
+- preset switching with the ◀ ▶ buttons beside the name
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
+- menu (≡): a tuner (note, cents bar, uses the pedal's reference pitch), settings (presets
+  per bank for the label), and Disconnect / Connect so Cortex Cloud can take the pedal without
+  powering the screen off
 
 Everything about the protocol is provisional and firmware-specific (verified on NanOS 2.2.1,
 September 2026). The pedal accepts several Bluetooth clients at once, so the screen can run
@@ -21,9 +24,8 @@ Working on the pedal since 2026-09-26: the screen boots in about a second, conne
 Nano Cortex, shows the preset, capture, IR and FX blocks, follows footswitch presses, and
 switches presets and toggles blocks from the touch screen. The protocol core
 (`components/nano_protocol`) is plain C and passes its host tests against packets captured from
-the real pedal. Touch is calibrated from the firmware's own log (corners land within ~20 px of
-the glass edge, every tile and both preset edges verified). Open items: a settings screen (bank
-size), gate tile, tuner and expression views, mounting.
+the real pedal. Touch is calibrated from the firmware's own log. Open items: gate toggle,
+expression view, brightness / auto-off, mounting.
 
 ## Layout
 
@@ -63,6 +65,17 @@ touch mirroring.
 
 Managed components (fetched on first build): `lvgl/lvgl ^9.2`, `espressif/esp_lvgl_port ^2.4`,
 `espressif/esp_lcd_ili9341`, `atanisoft/esp_lcd_touch_xpt2046`.
+
+### UI preview on the host
+
+`tools/preview` builds the real LVGL and `nano_ui` natively and renders every view to PNG files
+from the hardware fixtures, so layout work needs no board:
+
+```sh
+cd tools/preview
+cmake -B build && cmake --build build -j8 && ./build/preview out
+open out
+```
 
 ### Protocol tests on the host
 
