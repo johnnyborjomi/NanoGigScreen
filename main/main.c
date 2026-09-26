@@ -47,7 +47,7 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
@@ -78,6 +78,12 @@ static int64_t s_state_due_us;      /* 0 = no pending re-read */
 static int64_t s_state_sent_us;     /* when the last state request went out */
 static int64_t s_last_pitch_us;     /* last tuner reading; the tuner view clears after silence */
 static bool s_tuner_cleared = true;
+static bool s_tuner_muted;          /* what we ask for / what the pedal last reported */
+static bool s_tuner_view_ours;      /* the view was opened from the menu (we sent tuner-on) */
+/* Preset select in flight: the next tap builds on it, a dump that still shows the old preset does not undo it. */
+static int s_pending_preset = -1;
+static int64_t s_pending_since_us;
+#define PENDING_PRESET_TIMEOUT_US (2500 * 1000)
 #define TUNER_SILENCE_US (600 * 1000)
 #define STATE_MIN_GAP_US (200 * 1000) /* a select's ack events also ask; one dump is enough */
 static bool s_link_ready;
@@ -161,6 +167,7 @@ static void ui_on_toggle_fx(uint8_t slot, bool on)
     xQueueSend(s_queue, &m, 0);
 }
 static void ui_on_toggle_gate(bool on) { app_msg_t m = { .kind = MSG_TOGGLE_GATE, .fx_on = on }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_tuner_mute(bool mute) { app_msg_t m = { .kind = MSG_TUNER_MUTE, .flag = mute }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_tuner(bool on) { app_msg_t m = { .kind = MSG_TUNER, .flag = on }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_link(bool connect) { app_msg_t m = { .kind = MSG_LINK, .flag = connect }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_bank_size(uint8_t v) { app_msg_t m = { .kind = MSG_BANK_SIZE, .value = v }; xQueueSend(s_queue, &m, 0); }
@@ -188,15 +195,27 @@ static void schedule_state(uint32_t delay_ms)
     if (s_state_due_us == 0 || due < s_state_due_us) s_state_due_us = due;
 }
 
+static bool pending_preset_active(void)
+{
+    if (s_pending_preset < 0) return false;
+    if (esp_timer_get_time() - s_pending_since_us > PENDING_PRESET_TIMEOUT_US) {
+        s_pending_preset = -1;
+        return false;
+    }
+    return true;
+}
+
 static void select_preset(int delta)
 {
     if (!s_link_ready) return;
-    int base = s_state_valid ? s_state.active_preset : 0;
+    int base = pending_preset_active() ? s_pending_preset : (s_state_valid ? s_state.active_preset : 0);
     int idx = (base + delta + NANO_PRESET_COUNT) % NANO_PRESET_COUNT;
     uint8_t frame[NANO_PRESET_SELECT_LEN];
     size_t n = nano_build_preset_select(frame, sizeof(frame), (uint8_t)idx);
     if (n && nano_ble_write(frame, n) == 0) {
         ESP_LOGI(TAG, "-> preset select %d", idx + 1);
+        s_pending_preset = idx;
+        s_pending_since_us = esp_timer_get_time();
         s_state.active_preset = (uint8_t)idx; /* optimistic; the dump confirms */
         if (lvgl_port_lock(50)) {
             nano_ui_set_preset((uint8_t)idx, s_meta_valid ? &s_meta_blob.meta : NULL);
@@ -247,11 +266,13 @@ static void set_tuner(bool on)
     if (on) {
         float ref = (s_state_valid && s_state.tuner_reference_hz > 0) ? s_state.tuner_reference_hz : 440.0f;
         uint8_t frame[17];
-        size_t n = nano_build_tuner_on(frame, sizeof(frame), ref, false);
-        if (n && nano_ble_write(frame, n) == 0) ESP_LOGI(TAG, "-> tuner on (%.1f Hz)", ref);
+        size_t n = nano_build_tuner_on(frame, sizeof(frame), ref, s_tuner_muted);
+        if (n && nano_ble_write(frame, n) == 0) ESP_LOGI(TAG, "-> tuner on (%.1f Hz, %s)", ref, s_tuner_muted ? "muted" : "sound on");
         s_tuner_cleared = true;
+        s_tuner_view_ours = true;
     } else if (nano_ble_write(NANO_REQ_TUNER_OFF, sizeof(NANO_REQ_TUNER_OFF)) == 0) {
         ESP_LOGI(TAG, "-> tuner off");
+        s_tuner_view_ours = false;
     }
 }
 
@@ -265,8 +286,19 @@ static bool cache_contradicts_state(void)
     return strcmp(p->capture_name, s_state.capture_name) != 0;
 }
 
-static void on_state(const nano_state_t *st)
+static void on_state(const nano_state_t *in)
 {
+    nano_state_t copy = *in;
+    const nano_state_t *st = &copy;
+    if (pending_preset_active()) {
+        if (in->active_preset == s_pending_preset) {
+            s_pending_preset = -1; /* confirmed */
+        } else {
+            /* A dump for an earlier select; keep showing the target and wait for the next dump. */
+            copy.active_preset = (uint8_t)s_pending_preset;
+            schedule_state(CONFIRM_MS);
+        }
+    }
     s_state = *st;
     s_state_valid = true;
     ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\", IR \"%s\", fw %s", st->active_preset + 1, st->capture_name, st->ir_short_name, st->firmware);
@@ -326,7 +358,9 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     case NANO_EV_PRESET_CHANGED:
         ESP_LOGI(TAG, "<- preset changed: %u", ev.preset + 1);
         s_state.active_preset = ev.preset;
+        memcpy(s_state.footswitch, ev.footswitch, 4);
         if (lvgl_port_lock(50)) {
+            nano_ui_set_footswitches(ev.footswitch);
             nano_ui_set_preset(ev.preset, s_meta_valid ? &s_meta_blob.meta : NULL);
             lvgl_port_unlock();
         }
@@ -343,14 +377,32 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         s_last_pitch_us = esp_timer_get_time();
         s_tuner_cleared = false;
         if (lvgl_port_lock(20)) {
-            if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_set_tuner(ev.note, ev.cents, ev.in_tune);
+            if (nano_ui_view() != NANO_VIEW_TUNER) {
+                /* Readings with our view closed: the tuner was started on the pedal. Follow it. */
+                ESP_LOGI(TAG, "<- pitch while the tuner view is closed: opening it (pedal-started tuner)");
+                nano_ui_open_tuner_from_pedal();
+                s_tuner_view_ours = false;
+            }
+            nano_ui_set_tuner(ev.note, ev.cents, ev.in_tune);
             lvgl_port_unlock();
         }
         break;
     case NANO_EV_TUNER_ACK:
-        /* The pedal ended its tuner itself (footswitch): close our view without sending tuner-off. */
-        if (!ev.tuner_on && lvgl_port_lock(50)) {
-            if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_show(NANO_VIEW_MAIN);
+        ESP_LOGI(TAG, "<- tuner report: %s, %s, %.1f Hz", ev.tuner_on ? "on" : "off", ev.tuner_muted ? "muted" : "sound on", ev.reference_hz);
+        if (lvgl_port_lock(50)) {
+            if (ev.tuner_on) {
+                if (nano_ui_view() != NANO_VIEW_TUNER) {
+                    nano_ui_open_tuner_from_pedal();
+                    s_tuner_view_ours = false;
+                }
+                s_tuner_muted = ev.tuner_muted;
+                nano_ui_set_tuner_mute(ev.tuner_muted);
+            } else if (nano_ui_view() == NANO_VIEW_TUNER) {
+                /* The pedal ended its tuner (footswitch): close the view; nano_ui_show would send tuner-off. */
+                s_tuner_view_ours = false;
+                nano_ui_open_tuner_from_pedal(); /* no-op if already open; keeps the API symmetrical */
+                nano_ui_show(NANO_VIEW_MAIN);
+            }
             lvgl_port_unlock();
         }
         break;
@@ -423,6 +475,14 @@ static void app_task(void *arg)
             case MSG_TOGGLE_GATE:
                 toggle_gate(m.fx_on);
                 break;
+            case MSG_TUNER_MUTE:
+                s_tuner_muted = m.flag;
+                if (lvgl_port_lock(50)) {
+                    nano_ui_set_tuner_mute(m.flag); /* optimistic; the pedal's report confirms */
+                    lvgl_port_unlock();
+                }
+                set_tuner(true); /* re-send tuner-on with the new flag, as Cortex Cloud does */
+                break;
             case MSG_LINK:
                 ESP_LOGI(TAG, "link %s", m.flag ? "enabled" : "disabled");
                 nano_ble_set_enabled(m.flag);
@@ -465,7 +525,7 @@ void app_main(void)
     nano_ui_callbacks_t ui_cb = {
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
-        .on_toggle_gate = ui_on_toggle_gate,
+        .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute,
     };
     if (lvgl_port_lock(0)) {
         nano_ui_create(disp, &ui_cb);

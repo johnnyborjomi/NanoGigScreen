@@ -253,7 +253,13 @@ static void test_events(void)
     CHECK(e.kind == NANO_EV_EXPRESSION && e.position == 254);
     n = from_hex("0D C0 08 01 20 01 2D 00 00 DC 43 7F 00 00 00", pkt, sizeof(pkt));
     nano_decode_event(pkt, n, &e);
-    CHECK(e.kind == NANO_EV_TUNER_ACK && e.tuner_on && e.reference_hz == 440.0f);
+    CHECK(e.kind == NANO_EV_TUNER_ACK && e.tuner_on && e.reference_hz == 440.0f && !e.tuner_muted);
+    n = from_hex("0F C0 08 01 20 01 2D 00 00 DC 43 38 01 7F 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_TUNER_ACK && e.tuner_on && e.tuner_muted);
+    n = from_hex("0B C0 08 01 2D 00 00 DC 43 7F 00 00 00", pkt, sizeof(pkt)); /* pedal ended its tuner */
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_TUNER_ACK && !e.tuner_on);
     /* Garbage does not fault. */
     n = from_hex("FF FF FF", pkt, sizeof(pkt));
     nano_decode_event(pkt, n, &e);

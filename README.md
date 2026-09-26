@@ -5,14 +5,15 @@ ESP32-2432S028 "Cheap Yellow Display" (2.8" 320×240). It talks to the pedal ove
 LE with the same reverse-engineered protocol as [NanoGig](https://github.com/johnnyborjomi/NanoGig)
 and shows, with no phone on the floor:
 
-- the active preset's name in big type and its bank label (`3B`, Mvave Chocolate style)
+- the active preset's name in big type and its bank label (`3B`, Mvave Chocolate style), with
+  IA / IB / IIA / IIB badges when the preset is assigned to a footswitch
 - the five FX blocks with their model names, lit in the Cortex Cloud category colours
 - the capture and IR names with on/off dots, gate state and tempo
 - preset switching with the ◀ ▶ buttons beside the name
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
-- menu (≡): a tuner (note, cents bar, uses the pedal's reference pitch), settings (presets
-  per bank for the label), and Disconnect / Connect so Cortex Cloud can take the pedal without
-  powering the screen off
+- menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),
+  settings (presets per bank for the label), and Disconnect / Connect so Cortex Cloud can take
+  the pedal without powering the screen off. A tuner started on the pedal opens the view too.
 
 Everything about the protocol is provisional and firmware-specific (verified on NanOS 2.2.1,
 September 2026). The pedal accepts several Bluetooth clients at once, so the screen can run

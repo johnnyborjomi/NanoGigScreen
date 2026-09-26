@@ -37,6 +37,8 @@ typedef struct {
     void (*on_toggle_gate)(bool on);
     /* Tuner view opened (true) or closed (false): the app turns the pedal's tuner on / off. */
     void (*on_tuner)(bool on);
+    /* The mute label in the tuner view was tapped: the app re-sends tuner-on with this mute flag. */
+    void (*on_tuner_mute)(bool mute);
     /* Menu "Disconnect" / "Connect". */
     void (*on_link)(bool connect);
     /* Settings changed the presets-per-bank count (2..8). */
@@ -52,6 +54,8 @@ void nano_ui_set_link_enabled(bool enabled);
 void nano_ui_set_bank_size(uint8_t per_bank);
 /* Show a preset immediately (footswitch event / optimistic switch) using cached names. */
 void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta);
+/* Footswitch assignments IA, IB, IIA, IIB (preset indices): badges appear on the assigned preset. */
+void nano_ui_set_footswitches(const uint8_t fs[4]);
 /* Full refresh from a state dump plus cached metadata (meta may be NULL). */
 void nano_ui_set_state(const nano_state_t *state, const nano_metadata_t *meta);
 /* Grey everything out while there is no link. */
@@ -61,6 +65,10 @@ void nano_ui_show(nano_view_t view);
 nano_view_t nano_ui_view(void);
 /* Tuner reading; `note` NULL = silence. */
 void nano_ui_set_tuner(const char *note, float cents, bool in_tune);
+/* The pedal's tuner started on the pedal itself: show the view without sending tuner-on. */
+void nano_ui_open_tuner_from_pedal(void);
+/* Mute state as the pedal reports it (tuner report field 7). */
+void nano_ui_set_tuner_mute(bool muted);
 
 #ifdef __cplusplus
 }

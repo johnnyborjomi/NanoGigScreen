@@ -210,6 +210,7 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
     case NANO_MSG_TUNER: {
         out->kind = NANO_EV_TUNER_ACK;
         out->tuner_on = nano_first_varint(body, plen, 4, 0) == 1;
+        out->tuner_muted = nano_first_varint(body, plen, 7, 0) == 1;
         float ref;
         out->reference_hz = nano_first_fixed32_float(body, plen, 5, &ref) ? ref : 0.0f;
         return;

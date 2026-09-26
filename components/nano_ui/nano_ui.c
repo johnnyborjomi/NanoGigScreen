@@ -59,12 +59,23 @@ static bool s_tile_present[NANO_FX_SLOT_COUNT];
 static bool s_tile_on[NANO_FX_SLOT_COUNT];
 static uint8_t s_preset;
 static uint8_t s_per_bank = 4;
+/* Footswitch badges (web app: IA / IIA yellow, IB / IIB indigo), shown under the bank label. */
+static lv_obj_t *s_fs_badges[4];
+static uint8_t s_footswitch[4];
+static bool s_footswitch_known;
+static const char *const FS_NAMES[4] = { "IA", "IB", "IIA", "IIB" };
+static const uint32_t FS_BG[4] = { 0xF5C542, 0x6A5CFF, 0xF5C542, 0x6A5CFF };
+static const uint32_t FS_FG[4] = { 0x111111, 0xFFFFFF, 0x111111, 0xFFFFFF };
+#define BADGE_W 26
+#define BADGE_H 14
+#define BADGE_GAP 3
 static bool s_link_enabled = true;
 static lv_point_t s_press_point;
 
 /* menu / settings / tuner */
 static lv_obj_t *s_link_btn_label, *s_bank_value;
-static lv_obj_t *s_tuner_note, *s_tuner_cents, *s_tuner_bar, *s_tuner_verdict;
+static lv_obj_t *s_tuner_note, *s_tuner_cents, *s_tuner_bar, *s_tuner_verdict, *s_tuner_mute;
+static bool s_tuner_muted;
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -177,6 +188,12 @@ static void on_gate_clicked(lv_event_t *e)
     if (s_cb.on_toggle_gate) s_cb.on_toggle_gate(s_gate_on);
 }
 
+static void on_mute_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (s_cb.on_tuner_mute) s_cb.on_tuner_mute(!s_tuner_muted);
+}
+
 static void on_tile_clicked(lv_event_t *e)
 {
     uint8_t slot = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
@@ -233,6 +250,15 @@ static void build_main(lv_obj_t *scr)
     s_preset_name = make_label(s_main, &lv_font_montserrat_32, C_TEXT);
     lv_label_set_long_mode(s_preset_name, LV_LABEL_LONG_WRAP);
     lv_label_set_text(s_preset_name, "NanoGig");
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *b = make_box(s_main, 0, 0, BADGE_W, BADGE_H, FS_BG[i]);
+        lv_obj_set_style_radius(b, 4, 0);
+        lv_obj_t *l = make_label(b, &montserrat_medium_10, FS_FG[i]);
+        lv_label_set_text(l, FS_NAMES[i]);
+        lv_obj_center(l);
+        lv_obj_set_hidden(b, true);
+        s_fs_badges[i] = b;
+    }
 
     /* Gate button, then the capture / IR lines. */
     s_gate = make_button(s_main, EDGE_X, LINES_Y + (LINES_H - GATE_H) / 2, GATE_W, GATE_H, "GATE", &montserrat_medium_10, C_OFF, C_TEXT, on_gate_clicked, NULL);
@@ -355,6 +381,11 @@ static void build_tuner(lv_obj_t *scr)
     lv_obj_set_style_text_align(s_tuner_verdict, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(s_tuner_verdict, 0, 166);
     lv_label_set_text(s_tuner_verdict, "Play a note");
+    /* Mute state, tappable: re-sends tuner-on with the other flag (Cortex Cloud does the same). */
+    s_tuner_mute = make_button(s_tuner, SCREEN_W - 44 - 96, 4, 92, 22, "SOUND ON", &montserrat_medium_10, C_PANEL, C_MUTED, on_mute_clicked, NULL);
+    lv_obj_set_style_radius(s_tuner_mute, 7, 0);
+    lv_obj_add_event_cb(s_tuner_mute, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_set_ext_click_area(s_tuner_mute, 8);
     lv_obj_t *done = make_button(s_tuner, 12, SCREEN_H - 50, SCREEN_W - 24, 40, "Done", &lv_font_montserrat_20, C_PANEL, C_TEXT, on_close, NULL);
     lv_obj_add_event_cb(done, on_pressed, LV_EVENT_PRESSED, NULL);
 }
@@ -375,18 +406,38 @@ void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb)
     nano_ui_set_link_enabled(true);
 }
 
-void nano_ui_show(nano_view_t view)
+static void show_view(nano_view_t view, bool notify)
 {
     if (view == s_view) return;
-    if (s_view == NANO_VIEW_TUNER && s_cb.on_tuner) s_cb.on_tuner(false);
+    if (s_view == NANO_VIEW_TUNER && notify && s_cb.on_tuner) s_cb.on_tuner(false);
     s_view = view;
     lv_obj_set_hidden(s_menu, view != NANO_VIEW_MENU);
     lv_obj_set_hidden(s_settings, view != NANO_VIEW_SETTINGS);
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
     if (view == NANO_VIEW_TUNER) {
         nano_ui_set_tuner(NULL, 0, false);
-        if (s_cb.on_tuner) s_cb.on_tuner(true);
+        if (notify && s_cb.on_tuner) s_cb.on_tuner(true);
     }
+}
+
+void nano_ui_show(nano_view_t view)
+{
+    show_view(view, true);
+}
+
+void nano_ui_open_tuner_from_pedal(void)
+{
+    show_view(NANO_VIEW_TUNER, false);
+}
+
+void nano_ui_set_tuner_mute(bool muted)
+{
+    s_tuner_muted = muted;
+    lv_obj_t *l = lv_obj_get_child(s_tuner_mute, 0);
+    lv_label_set_text(l, muted ? "MUTED" : "SOUND ON");
+    lv_obj_set_style_text_color(l, lv_color_hex(muted ? C_WARN : C_MUTED), 0);
+    lv_obj_set_style_bg_color(s_tuner_mute, lv_color_hex(muted ? 0x3A2A10 : C_PANEL), 0);
+    lv_obj_center(l);
 }
 
 nano_view_t nano_ui_view(void)
@@ -416,22 +467,48 @@ void nano_ui_set_bank_size(uint8_t per_bank)
 
 static void layout_preset_row(void)
 {
-    /* Label at the top-left of the row; the name takes the rest, vertically centred. */
+    /* Which footswitch badges apply to the shown preset. */
+    int shown[4], n = 0;
+    if (s_footswitch_known && lv_label_get_text(s_preset_label)[0]) {
+        for (int i = 0; i < 4; i++) if (s_footswitch[i] == s_preset) shown[n++] = i;
+    }
+    for (int i = 0; i < 4; i++) lv_obj_set_hidden(s_fs_badges[i], true);
+    int badge_cols = n >= 2 ? 2 : n;
+    int badge_rows = (n + 1) / 2;
+    int32_t badges_w = badge_cols ? badge_cols * BADGE_W + (badge_cols - 1) * BADGE_GAP : 0;
+    (void)badge_rows;
+
+    /* Everything top-aligned with the nav buttons, so nothing jumps between one- and two-line names. */
+    const int32_t top = ROW_Y + (ROW_H - NAV_H) / 2;
+    const int32_t max_h = ROW_Y + ROW_H - top - 2;
     lv_obj_update_layout(s_preset_label);
     int32_t label_w = lv_obj_get_width(s_preset_label);
-    int32_t x = EDGE_X + NAV_W + 4 + label_w + (label_w ? 6 : 0);
+    int32_t col_w = label_w > badges_w ? label_w : badges_w;
+    int32_t col_x = EDGE_X + NAV_W + 4;
+    int32_t x = col_x + col_w + (col_w ? 6 : 0);
     int32_t w = SCREEN_W - EDGE_X - NAV_W - 4 - x;
     const char *text = lv_label_get_text(s_preset_name);
-    const lv_font_t *font = fit_font(text, w, ROW_H - 8);
+    const lv_font_t *font = fit_font(text, w, max_h);
     lv_obj_set_style_text_font(s_preset_name, font, 0);
     lv_obj_set_width(s_preset_name, w);
-    lv_obj_update_layout(s_preset_name);
-    int32_t h = lv_obj_get_height(s_preset_name);
-    lv_obj_set_pos(s_preset_name, x, ROW_Y + (ROW_H - h) / 2);
-    /* The label sits on the first text line. */
-    int32_t first_line_h = lv_font_get_line_height(font);
+    lv_obj_set_pos(s_preset_name, x, top);
+
+    /* Label at the top of the column, badges under it. */
     int32_t label_h = lv_font_get_line_height(&lv_font_montserrat_24);
-    lv_obj_set_pos(s_preset_label, EDGE_X + NAV_W + 4, ROW_Y + (ROW_H - h) / 2 + (first_line_h - label_h) / 2);
+    lv_obj_set_pos(s_preset_label, col_x, top + 2);
+    for (int k = 0; k < n; k++) {
+        int32_t bx = col_x + (k % 2) * (BADGE_W + BADGE_GAP);
+        int32_t by = top + 2 + label_h + 2 + (k / 2) * (BADGE_H + BADGE_GAP);
+        lv_obj_set_pos(s_fs_badges[shown[k]], bx, by);
+        lv_obj_set_hidden(s_fs_badges[shown[k]], false);
+    }
+}
+
+void nano_ui_set_footswitches(const uint8_t fs[4])
+{
+    memcpy(s_footswitch, fs, 4);
+    s_footswitch_known = true;
+    layout_preset_row();
 }
 
 void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta)
@@ -460,6 +537,8 @@ static void set_line(lv_obj_t *dot, lv_obj_t *label, const char *name, bool on, 
 
 void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
 {
+    memcpy(s_footswitch, st->footswitch, 4);
+    s_footswitch_known = true;
     nano_ui_set_preset(st->active_preset, meta);
     if ((!meta || !meta->presets[st->active_preset].name[0]) && st->capture_name[0]) {
         /* No cached name yet: the capture name is the most recognisable thing we have. */
@@ -509,6 +588,7 @@ void nano_ui_set_stale(bool stale)
 {
     if (stale) {
         /* No live state: a neutral placeholder instead of a preset the pedal may not be on. */
+        s_footswitch_known = false;
         lv_label_set_text(s_preset_label, "");
         lv_label_set_text(s_preset_name, "Preset name");
         layout_preset_row();
@@ -519,6 +599,7 @@ void nano_ui_set_stale(bool stale)
     lv_obj_set_style_opa(s_capture, opa, 0);
     lv_obj_set_style_opa(s_ir, opa, 0);
     lv_obj_set_style_opa(s_gate, opa, 0);
+    for (int i = 0; i < 4; i++) lv_obj_set_style_opa(s_fs_badges[i], opa, 0);
     for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) lv_obj_set_style_opa(s_tiles[i], opa, 0);
 }
 

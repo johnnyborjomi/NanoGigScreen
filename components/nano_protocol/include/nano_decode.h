@@ -89,6 +89,7 @@ typedef struct {
     float cents;               /* TUNER_PITCH */
     bool in_tune;              /* TUNER_PITCH */
     bool tuner_on;             /* TUNER_ACK */
+    bool tuner_muted;          /* TUNER_ACK field 7 (absent = 0 = outputs on) */
     float reference_hz;        /* TUNER_ACK, 0 when absent */
 } nano_event_t;
 
