@@ -1,6 +1,7 @@
 #include "cyd_board.h"
 
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
 #include "esp_lcd_panel_io.h"
@@ -44,9 +45,66 @@ static const char *TAG = "cyd_board";
 #define LCD_PIXEL_CLOCK_HZ (40 * 1000 * 1000)
 #define LVGL_BUFFER_LINES 40
 
+/* Backlight PWM: the CYD's LED driver takes a plain GPIO; 5 kHz keeps it out of hearing and off camera. */
+#define BL_TIMER LEDC_TIMER_0
+#define BL_MODE LEDC_LOW_SPEED_MODE
+#define BL_CHANNEL LEDC_CHANNEL_0
+#define BL_RES LEDC_TIMER_10_BIT
+#define BL_DUTY_MAX 1023
+#define BL_FREQ_HZ 5000
+/* Duty per level 1..10 in tenths of a percent: roughly even perceived steps, 1 still readable in the dark. */
+static const uint16_t BL_LEVEL_PERMILLE[CYD_BRIGHTNESS_MAX] = { 30, 60, 100, 150, 220, 310, 420, 560, 750, 1000 };
+
+static uint8_t s_bl_level = CYD_BRIGHTNESS_MAX;
+static bool s_bl_on;
+static bool s_rot180 = ROTATE_180;
+static lv_display_t *s_disp;
+static esp_lcd_panel_handle_t s_panel;
+
+static void backlight_apply(void)
+{
+    uint32_t duty = 0;
+    if (s_bl_on) {
+        uint8_t lvl = s_bl_level < CYD_BRIGHTNESS_MIN ? CYD_BRIGHTNESS_MIN : s_bl_level > CYD_BRIGHTNESS_MAX ? CYD_BRIGHTNESS_MAX : s_bl_level;
+        duty = (uint32_t)BL_LEVEL_PERMILLE[lvl - 1] * BL_DUTY_MAX / 1000;
+    }
+    ledc_set_duty(BL_MODE, BL_CHANNEL, duty);
+    ledc_update_duty(BL_MODE, BL_CHANNEL);
+}
+
 void cyd_backlight(bool on)
 {
-    gpio_set_level(CYD_LCD_BACKLIGHT, on ? 1 : 0);
+    s_bl_on = on;
+    backlight_apply();
+}
+
+void cyd_backlight_set_level(uint8_t level)
+{
+    if (level < CYD_BRIGHTNESS_MIN) level = CYD_BRIGHTNESS_MIN;
+    if (level > CYD_BRIGHTNESS_MAX) level = CYD_BRIGHTNESS_MAX;
+    s_bl_level = level;
+    backlight_apply();
+}
+
+static esp_err_t init_backlight(void)
+{
+    ledc_timer_config_t timer = {
+        .speed_mode = BL_MODE,
+        .duty_resolution = BL_RES,
+        .timer_num = BL_TIMER,
+        .freq_hz = BL_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ESP_RETURN_ON_ERROR(ledc_timer_config(&timer), TAG, "backlight timer");
+    ledc_channel_config_t ch = {
+        .gpio_num = CYD_LCD_BACKLIGHT,
+        .speed_mode = BL_MODE,
+        .channel = BL_CHANNEL,
+        .timer_sel = BL_TIMER,
+        .duty = 0, /* off until the first frame, so the boot does not flash garbage */
+        .hpoint = 0,
+    };
+    return ledc_channel_config(&ch);
 }
 
 void cyd_led(bool r, bool g, bool b)
@@ -59,13 +117,12 @@ void cyd_led(bool r, bool g, bool b)
 static esp_err_t init_gpio(void)
 {
     gpio_config_t cfg = {
-        .pin_bit_mask = (1ULL << CYD_LCD_BACKLIGHT) | (1ULL << CYD_LED_R) | (1ULL << CYD_LED_G) | (1ULL << CYD_LED_B),
+        .pin_bit_mask = (1ULL << CYD_LED_R) | (1ULL << CYD_LED_G) | (1ULL << CYD_LED_B),
         .mode = GPIO_MODE_OUTPUT,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "gpio");
     cyd_led(false, false, false);
-    cyd_backlight(false); /* on after the first frame, so the boot does not flash garbage */
-    return ESP_OK;
+    return init_backlight();
 }
 
 static esp_err_t init_panel(esp_lcd_panel_io_handle_t *io_out, esp_lcd_panel_handle_t *panel_out)
@@ -132,8 +189,11 @@ static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
         int32_t down = (int32_t)x[i];
         int32_t sx = (across - TOUCH_RAW_ACROSS_MIN) * CYD_H_RES / (TOUCH_RAW_ACROSS_MAX - TOUCH_RAW_ACROSS_MIN);
         int32_t sy = (down - TOUCH_RAW_DOWN_MIN) * CYD_V_RES / (TOUCH_RAW_DOWN_MAX - TOUCH_RAW_DOWN_MIN);
-        x[i] = (uint16_t)(sx < 0 ? 0 : sx >= CYD_H_RES ? CYD_H_RES - 1 : sx);
-        y[i] = (uint16_t)(sy < 0 ? 0 : sy >= CYD_V_RES ? CYD_V_RES - 1 : sy);
+        sx = sx < 0 ? 0 : sx >= CYD_H_RES ? CYD_H_RES - 1 : sx;
+        sy = sy < 0 ? 0 : sy >= CYD_V_RES ? CYD_V_RES - 1 : sy;
+        if (s_rot180) { sx = CYD_H_RES - 1 - sx; sy = CYD_V_RES - 1 - sy; } /* the glass turned with the panel */
+        x[i] = (uint16_t)sx;
+        y[i] = (uint16_t)sy;
     }
 }
 
@@ -174,6 +234,7 @@ lv_display_t *cyd_board_init(void)
     esp_lcd_panel_io_handle_t io = NULL;
     esp_lcd_panel_handle_t panel = NULL;
     if (init_panel(&io, &panel) != ESP_OK) return NULL;
+    s_panel = panel;
 
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_priority = 4;
@@ -192,8 +253,8 @@ lv_display_t *cyd_board_init(void)
         .color_format = LV_COLOR_FORMAT_RGB565,
         .rotation = {
             .swap_xy = true,
-            .mirror_x = !ROTATE_180,
-            .mirror_y = ROTATE_180,
+            .mirror_x = !s_rot180,
+            .mirror_y = s_rot180,
         },
         .flags = {
             .buff_dma = true,
@@ -202,6 +263,7 @@ lv_display_t *cyd_board_init(void)
     };
     lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
     if (!disp) return NULL;
+    s_disp = disp;
 
     esp_lcd_touch_handle_t tp = NULL;
     if (init_touch(&tp) == ESP_OK) {
@@ -212,3 +274,19 @@ lv_display_t *cyd_board_init(void)
     }
     return disp;
 }
+
+/* The LVGL port applies its rotation config once at init; a run-time change is the same MADCTL
+ * flip on the panel (swap_xy stays), then everything on screen is redrawn into the new mapping. */
+void cyd_display_set_rotation(bool rotate_180)
+{
+    s_rot180 = rotate_180;
+    if (!s_panel) return; /* before init: cyd_board_init() picks it up */
+    esp_lcd_panel_mirror(s_panel, !s_rot180, s_rot180);
+    if (s_disp) {
+        lv_obj_invalidate(lv_display_get_screen_active(s_disp));
+        lv_obj_invalidate(lv_display_get_layer_top(s_disp));
+        lv_obj_invalidate(lv_display_get_layer_sys(s_disp));
+    }
+}
+
+bool cyd_display_rotation(void) { return s_rot180; }

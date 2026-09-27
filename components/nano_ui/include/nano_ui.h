@@ -52,6 +52,10 @@ typedef struct {
     void (*on_outputs_mute)(bool mute);
     /* Settings toggled "Show expression pedal": the app persists it. */
     void (*on_expression_show)(bool show);
+    /* Settings page 2: display turned 180 degrees (true) or not; the app rotates the panel and persists it. */
+    void (*on_rotation)(bool rotate_180);
+    /* Settings page 2: backlight brightness 1..10; the app applies and persists it. */
+    void (*on_brightness)(uint8_t level);
     /* Tempo view: - / + pressed (delta in BPM). */
     void (*on_tempo_delta)(int delta);
     /* Tempo view opened (true) / closed (false) from the screen: the app puts the pedal in / out of tap tempo mode. */
@@ -71,6 +75,9 @@ void nano_ui_set_label_style(uint8_t style);
 void nano_ui_set_outputs_muted(bool muted);
 /* Settings pager (for previews / tests). */
 void nano_ui_settings_page(int index);
+/* Display settings as loaded at boot (page 2 shows them). */
+void nano_ui_set_rotation(bool rotate_180);
+void nano_ui_set_brightness(uint8_t level);
 /* Show a preset immediately (footswitch event / optimistic switch) using cached names. */
 void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta);
 /* Footswitch assignments IA, IB, IIA, IIB (preset indices): badges appear on the assigned preset. */

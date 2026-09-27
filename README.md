@@ -12,7 +12,8 @@ and shows, with no phone on the floor:
 - preset switching with the ◀ ▶ buttons beside the name
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
 - menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),
-  settings (presets per bank for the label), a tempo view (big BPM, − / + set the pedal's tempo,
+  settings (presets per bank and label style, outputs 1/2 mute, expression indicators; page 2:
+  display rotation 0° / 180° and brightness 1–10, both remembered), a tempo view (big BPM, − / + set the pedal's tempo,
   follows the pedal's tap tempo live), and Disconnect / Connect so Cortex Cloud can take the
   pedal without powering the screen off. A tuner started on the pedal opens the view too.
 
@@ -26,8 +27,8 @@ Working on the pedal since 2026-09-26: the screen boots in about a second, conne
 Nano Cortex, shows the preset, capture, IR and FX blocks, follows footswitch presses, and
 switches presets and toggles blocks from the touch screen. The protocol core
 (`components/nano_protocol`) is plain C and passes its host tests against packets captured from
-the real pedal. Touch is calibrated from the firmware's own log. Open items: brightness /
-auto-off, mounting.
+the real pedal. Touch is calibrated from the firmware's own log. Open items: auto-off / dimming after idle,
+mounting.
 
 ## Layout
 
@@ -120,7 +121,9 @@ Things to check on the bench, in order:
    likeliest compile error.
 2. Panel: the defaults are ST7789, no inversion (the user's CYD2USB board, checked with the
    community Arduino examples 2026-09-26). If the image is upside down, toggle
-   `CYD_ROTATE_180`; on a single-USB board switch to ILI9341.
+   Settings → page 2 → Rotate display (stored in NVS as `rot`; `CYD_ROTATE_180` is only the
+   first-boot default); on a single-USB board switch to ILI9341. Brightness lives next to it
+   (NVS `bright`, 1–10, PWM on the backlight pin).
 3. Touch: the axis swap and calibration live in `touch_calibrate()` in `cyd_board.c`, measured
    from the `touch press x= y=` lines the firmware prints on the serial port. On another board
    tap the four corners, read those lines, and adjust the four range constants.

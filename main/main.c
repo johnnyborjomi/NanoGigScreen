@@ -45,6 +45,8 @@ static const char *TAG = "nanogig";
 #define NVS_KEY_BANK "bank"
 #define NVS_KEY_LABEL_STYLE "lstyle"
 #define NVS_KEY_EXP_SHOW "expshow"
+#define NVS_KEY_ROTATE "rot"       /* 1 = display turned 180 degrees */
+#define NVS_KEY_BRIGHTNESS "bright" /* 1..10 */
 #define SETTINGS_READ_DELAY_MS 400  /* after the first state dump / a mute ack: one write at a time on the link */
 #define META_MAGIC 0x4E474D31u      /* "NGM1" */
 
@@ -53,16 +55,16 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
     char detail[32];
     uint8_t fx_slot;
     bool fx_on;
-    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show */
+    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show, MSG_ROTATE: 180 degrees */
     int delta;      /* MSG_TEMPO_DELTA */
-    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE */
+    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS */
     packet_t pkt;
 } app_msg_t;
 
@@ -180,6 +182,24 @@ static uint8_t label_style_load(void)
     return v <= NANO_LABEL_NUMERIC ? v : 0;
 }
 
+/* One u8 setting with a default (missing key or unreadable NVS = the default). */
+static uint8_t nvs_load_u8(const char *key, uint8_t dflt)
+{
+    nvs_handle_t h;
+    uint8_t v = dflt;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, key, &v);
+        nvs_close(h);
+    }
+    return v;
+}
+static bool rotate_load(void) { return nvs_load_u8(NVS_KEY_ROTATE, cyd_display_rotation() ? 1 : 0) != 0; }
+static uint8_t brightness_load(void)
+{
+    uint8_t v = nvs_load_u8(NVS_KEY_BRIGHTNESS, CYD_BRIGHTNESS_MAX);
+    return v < CYD_BRIGHTNESS_MIN ? CYD_BRIGHTNESS_MIN : v > CYD_BRIGHTNESS_MAX ? CYD_BRIGHTNESS_MAX : v;
+}
+
 static bool exp_show_load(void)
 {
     nvs_handle_t h;
@@ -240,6 +260,8 @@ static void ui_on_bank_size(uint8_t v) { app_msg_t m = { .kind = MSG_BANK_SIZE, 
 static void ui_on_label_style(uint8_t v) { app_msg_t m = { .kind = MSG_LABEL_STYLE, .value = v }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_outputs_mute(bool mute) { app_msg_t m = { .kind = MSG_OUTPUTS_MUTE, .flag = mute }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_expression_show(bool show) { app_msg_t m = { .kind = MSG_EXP_SHOW, .flag = show }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_rotation(bool rot) { app_msg_t m = { .kind = MSG_ROTATE, .flag = rot }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_brightness(uint8_t v) { app_msg_t m = { .kind = MSG_BRIGHTNESS, .value = v }; xQueueSend(s_queue, &m, 0); }
 
 /* ---- requests ------------------------------------------------------------- */
 
@@ -915,6 +937,18 @@ static void app_task(void *arg)
                     lvgl_port_unlock();
                 }
                 break;
+            case MSG_ROTATE:
+                ESP_LOGI(TAG, "display rotation %s", m.flag ? "180" : "0");
+                nvs_save_u8(NVS_KEY_ROTATE, m.flag ? 1 : 0);
+                if (lvgl_port_lock(100)) {
+                    cyd_display_set_rotation(m.flag); /* flips the panel and the touch map, redraws */
+                    lvgl_port_unlock();
+                }
+                break;
+            case MSG_BRIGHTNESS:
+                cyd_backlight_set_level(m.value); /* instant; the value label already shows it */
+                nvs_save_u8(NVS_KEY_BRIGHTNESS, m.value);
+                break;
             case MSG_BANK_SIZE:
                 bank_save(m.value);
                 if (lvgl_port_lock(50)) {
@@ -957,18 +991,26 @@ void app_main(void)
         ESP_LOGE(TAG, "display init failed");
         return;
     }
+    /* Display settings before the first frame: the backlight is still off. */
+    bool rot180 = rotate_load();
+    uint8_t brightness = brightness_load();
+    cyd_backlight_set_level(brightness);
     nano_ui_callbacks_t ui_cb = {
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute, .on_expression_show = ui_on_expression_show,
+        .on_rotation = ui_on_rotation, .on_brightness = ui_on_brightness,
     };
     if (lvgl_port_lock(0)) {
+        cyd_display_set_rotation(rot180); /* under the lock: the LVGL task already owns the panel bus */
         nano_ui_create(disp, &ui_cb);
         nano_ui_set_bank_size(bank_load());
         nano_ui_set_label_style(label_style_load());
         s_exp_show = exp_show_load();
         nano_ui_set_expression_show(s_exp_show);
+        nano_ui_set_rotation(rot180);
+        nano_ui_set_brightness(brightness);
         nano_ui_set_status("Starting Bluetooth", false);
         nano_ui_set_stale(true);
         nano_ui_set_connected(false);

@@ -46,7 +46,7 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define EXP_BAR_H (TILE_Y + TILE_H - ROW_Y)
 #define TILE_EXP_H 6      /* per-tile expression track at the bottom of an assigned FX tile */
 #define TILE_EXP_INSET 4
-#define SETTING_X 12 /* one page today: the pager hides its column; add PAGER_W + 8 when a second page comes */
+#define SETTING_X (EDGE_X + 36 + 8) /* right of the pager column (PAGER_W) */
 #define SETTING_RIGHT (SCREEN_W - 12 - SETTING_X)
 #define SETTING_ROW_H 34
 #define GATE_W 40
@@ -104,6 +104,12 @@ static lv_point_t s_press_point;
 
 /* menu / settings / tuner */
 static lv_obj_t *s_link_btn_label, *s_bank_value, *s_style_seg[3], *s_style_hint, *s_mute_toggle, *s_mute_knob, *s_exp_toggle, *s_exp_knob;
+/* settings page 2: display */
+static lv_obj_t *s_rot_seg[2], *s_bright_value;
+static bool s_rot180;
+static uint8_t s_brightness = 10;
+#define BRIGHTNESS_MIN 1
+#define BRIGHTNESS_MAX 10
 
 
 static lv_obj_t *s_tuner_note, *s_tuner_cents, *s_tuner_bar, *s_tuner_verdict, *s_tuner_mute;
@@ -384,6 +390,38 @@ static void on_mute_toggle_clicked(lv_event_t *e)
     if (s_cb.on_outputs_mute) s_cb.on_outputs_mute(s_outputs_muted);
 }
 
+static void refresh_rot_seg(void)
+{
+    for (int i = 0; i < 2; i++) {
+        bool sel = (int)s_rot180 == i;
+        lv_obj_set_style_bg_color(s_rot_seg[i], lv_color_hex(sel ? C_ACCENT : C_PANEL), 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(s_rot_seg[i], 0), lv_color_hex(sel ? C_FX_TEXT : C_TEXT), 0);
+    }
+}
+static void on_rot_clicked(lv_event_t *e)
+{
+    bool rot = (uintptr_t)lv_event_get_user_data(e) != 0;
+    if (rot == s_rot180) return;
+    s_rot180 = rot;
+    refresh_rot_seg();
+    if (s_cb.on_rotation) s_cb.on_rotation(rot);
+}
+static void set_brightness_text(void)
+{
+    char t[4];
+    snprintf(t, sizeof(t), "%u", (unsigned)s_brightness);
+    lv_label_set_text(s_bright_value, t);
+}
+static void on_brightness_step(lv_event_t *e)
+{
+    int delta = (int)(intptr_t)lv_event_get_user_data(e);
+    int v = (int)s_brightness + delta;
+    if (v < BRIGHTNESS_MIN || v > BRIGHTNESS_MAX) return;
+    s_brightness = (uint8_t)v;
+    set_brightness_text();
+    if (s_cb.on_brightness) s_cb.on_brightness(s_brightness);
+}
+
 static void on_bank_step(lv_event_t *e)
 {
     int delta = (int)(intptr_t)lv_event_get_user_data(e);
@@ -629,6 +667,20 @@ static lv_obj_t *setting_caption(lv_obj_t *parent, int32_t y, const char *text)
     return l;
 }
 
+/* [-] value [+] against the right edge of a settings row; returns the value label (font 20, centred). */
+static lv_obj_t *setting_stepper(lv_obj_t *page, int32_t y, lv_event_cb_t cb)
+{
+    lv_obj_t *plus = make_button(page, SETTING_RIGHT - 44, y, 44, SETTING_ROW_H, LV_SYMBOL_PLUS, &lv_font_montserrat_14, C_PANEL, C_TEXT, cb, (void *)(intptr_t)1);
+    lv_obj_add_event_cb(plus, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_t *value = make_label(page, &lv_font_montserrat_20, C_TEXT);
+    lv_obj_set_pos(value, SETTING_RIGHT - 44 - 40, y + (SETTING_ROW_H - lv_font_get_line_height(&lv_font_montserrat_20)) / 2);
+    lv_obj_set_width(value, 40);
+    lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_t *minus = make_button(page, SETTING_RIGHT - 44 - 40 - 44, y, 44, SETTING_ROW_H, LV_SYMBOL_MINUS, &lv_font_montserrat_14, C_PANEL, C_TEXT, cb, (void *)(intptr_t)-1);
+    lv_obj_add_event_cb(minus, on_pressed, LV_EVENT_PRESSED, NULL);
+    return value;
+}
+
 static void build_settings(lv_obj_t *scr)
 {
     s_settings = make_overlay(scr, "Settings", true);
@@ -640,14 +692,7 @@ static void build_settings(lv_obj_t *scr)
     /* Page 1. Presets per bank:  [-] 4 [+] */
     int32_t y = 4;
     setting_caption(page1, y, "Presets per bank");
-    lv_obj_t *plus = make_button(page1, SETTING_RIGHT - 44, y, 44, SETTING_ROW_H, LV_SYMBOL_PLUS, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_bank_step, (void *)(intptr_t)1);
-    lv_obj_add_event_cb(plus, on_pressed, LV_EVENT_PRESSED, NULL);
-    s_bank_value = make_label(page1, &lv_font_montserrat_20, C_TEXT);
-    lv_obj_set_pos(s_bank_value, SETTING_RIGHT - 44 - 40, y + (SETTING_ROW_H - lv_font_get_line_height(&lv_font_montserrat_20)) / 2);
-    lv_obj_set_width(s_bank_value, 40);
-    lv_obj_set_style_text_align(s_bank_value, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_t *minus = make_button(page1, SETTING_RIGHT - 44 - 40 - 44, y, 44, SETTING_ROW_H, LV_SYMBOL_MINUS, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_bank_step, (void *)(intptr_t)-1);
-    lv_obj_add_event_cb(minus, on_pressed, LV_EVENT_PRESSED, NULL);
+    s_bank_value = setting_stepper(page1, y, on_bank_step);
     set_bank_value_text();
 
     /* Preset label style: [1B] [A2] [1..64] with a one-line meaning under it. */
@@ -678,6 +723,28 @@ static void build_settings(lv_obj_t *scr)
     setting_caption(page1, y, "Show expression pedal");
     s_exp_toggle = make_toggle(page1, y, on_exp_toggle_clicked, &s_exp_knob);
     refresh_exp_toggle();
+
+    /* Page 2: the display itself. */
+    lv_obj_t *page2 = pager_add_page(&s_settings_pager, s_settings, SETTING_X, top, SCREEN_W - SETTING_X, page_h);
+
+    /* Rotate display: [0°] [180°] (the USB lead leaves left or right, depending on the mount). */
+    y = 4;
+    setting_caption(page2, y, "Rotate display");
+    static const char *const ROT[2] = { "0°", "180°" };
+    const int32_t rot_w = 70, rot_gap = 4;
+    for (int i = 0; i < 2; i++) {
+        int32_t x = SETTING_RIGHT - (2 - i) * rot_w - (1 - i) * rot_gap;
+        s_rot_seg[i] = make_button(page2, x, y, rot_w, SETTING_ROW_H, ROT[i], &lv_font_montserrat_14, C_PANEL, C_TEXT, on_rot_clicked, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(s_rot_seg[i], on_pressed, LV_EVENT_PRESSED, NULL);
+        lv_obj_set_style_radius(s_rot_seg[i], 8, 0);
+    }
+    refresh_rot_seg();
+
+    /* Brightness: [-] 10 [+], ten steps, applied as you tap. */
+    y = 52;
+    setting_caption(page2, y, "Brightness");
+    s_bright_value = setting_stepper(page2, y, on_brightness_step);
+    set_brightness_text();
 
     pager_show(&s_settings_pager, 0);
 }
@@ -994,6 +1061,19 @@ void nano_ui_set_outputs_muted(bool muted)
 void nano_ui_settings_page(int index)
 {
     pager_show(&s_settings_pager, index);
+}
+
+void nano_ui_set_rotation(bool rotate_180)
+{
+    s_rot180 = rotate_180;
+    refresh_rot_seg();
+}
+
+void nano_ui_set_brightness(uint8_t level)
+{
+    if (level < BRIGHTNESS_MIN || level > BRIGHTNESS_MAX) return;
+    s_brightness = level;
+    set_brightness_text();
 }
 
 static void layout_preset_row(void)

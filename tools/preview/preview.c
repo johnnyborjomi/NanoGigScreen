@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8 };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -207,6 +207,13 @@ int main(int argc, char **argv)
     nano_ui_set_outputs_muted(true);
     render(200);
     save(dir, "6-settings");
+    nano_ui_settings_page(1);
+    nano_ui_set_brightness(7);
+    nano_ui_set_rotation(true);
+    render(200);
+    save(dir, "6b-settings-display");
+    nano_ui_set_rotation(false);
+    nano_ui_settings_page(0);
     nano_ui_set_outputs_muted(false);
     nano_ui_show(NANO_VIEW_TUNER);
     nano_ui_set_tuner("A#", -7.3f, false);

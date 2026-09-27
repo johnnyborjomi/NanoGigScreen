@@ -44,7 +44,19 @@ extern "C" {
 
 /* Initialise the panel, touch and LVGL port. Returns the LVGL display or NULL. */
 lv_display_t *cyd_board_init(void);
+/* Backlight on (at the current brightness level) / off. */
 void cyd_backlight(bool on);
+/* Brightness in ten steps, 1 (dimmest) .. 10 (full); applied at once while the backlight is on and remembered for cyd_backlight(true). */
+#define CYD_BRIGHTNESS_MIN 1
+#define CYD_BRIGHTNESS_MAX 10
+void cyd_backlight_set_level(uint8_t level);
+/*
+ * Landscape orientation at run time: false = USB connector on the right (the Kconfig default),
+ * true = turned 180 degrees. Flips the panel scan direction and the touch mapping, then redraws
+ * the whole screen. Call with the LVGL lock held once the UI exists (safe before it too).
+ */
+void cyd_display_set_rotation(bool rotate_180);
+bool cyd_display_rotation(void);
 /* Each channel on/off (the LED has no PWM here). */
 void cyd_led(bool r, bool g, bool b);
 

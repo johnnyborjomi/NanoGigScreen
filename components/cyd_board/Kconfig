@@ -24,7 +24,8 @@ menu "NanoGig Screen board"
         bool "Rotate the screen 180 degrees"
         default n
         help
-            Landscape with the USB connector on the other side.
+            Landscape with the USB connector on the other side. This is only the
+            default: Settings page 2 on the screen changes it at run time (NVS "rot").
 
     config CYD_TOUCH_MIRROR_X
         bool "Mirror touch X"
