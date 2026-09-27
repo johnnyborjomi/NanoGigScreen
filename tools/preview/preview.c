@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -148,6 +148,22 @@ int main(int argc, char **argv)
     render(200);
     save(dir, "2a-tap-tempo-muted");
     nano_ui_set_tempo(120.0f, false);
+
+    /* 2b. expression pedal at 160/254: post 3 range 17..130 (as captured), pre 1 full range, post 1 heel-toe bypass */
+    {
+        nano_exp_assignments_t ea;
+        memset(&ea, 0, sizeof(ea));
+        ea.fx_range[4] = (nano_exp_range_t){ .assigned = true, .min = 17, .max = 130 };
+        ea.fx_range[0] = (nano_exp_range_t){ .assigned = true, .min = 0, .max = 255 };
+        ea.fx_bypass_mode[2] = 2;
+        nano_ui_set_expression_assignments(&ea);
+        nano_ui_set_expression(160);
+        render(200);
+        save(dir, "2b-expression");
+        nano_ui_set_expression(-1);
+        nano_ui_set_expression_assignments(NULL);
+        nano_ui_set_expression_show(true);
+    }
 
     /* 2c. label styles: A2 and numeric */
     nano_ui_set_label_style(NANO_LABEL_LETTER_NUMBER);

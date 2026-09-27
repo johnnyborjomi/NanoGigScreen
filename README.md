@@ -26,8 +26,8 @@ Working on the pedal since 2026-09-26: the screen boots in about a second, conne
 Nano Cortex, shows the preset, capture, IR and FX blocks, follows footswitch presses, and
 switches presets and toggles blocks from the touch screen. The protocol core
 (`components/nano_protocol`) is plain C and passes its host tests against packets captured from
-the real pedal. Touch is calibrated from the firmware's own log. Open items: gate toggle,
-expression view, brightness / auto-off, mounting.
+the real pedal. Touch is calibrated from the firmware's own log. Open items: brightness /
+auto-off, mounting.
 
 ## Layout
 
@@ -103,6 +103,12 @@ cmake -B build && cmake --build build && ./build/test_protocol
    bypass / knob / encoder / generic-change events re-read the state after a 400 ms debounce.
 6. Preset select: `36 C0 18 00 20 <preset> 28 <-1> 30 <-1> 38 <-1> 40 <-1> 48 04 1D 00 00 00`
    on `c304`; the pedal acks with `0x1F` then `0x1E`, and the following state dump confirms.
+7. Expression pedal: `0x40` position events (0–254, ~20/s) drive a thin orange bar in the right
+   gutter; `0xAA` values events fill a track at the bottom of every FX tile the pedal is
+   assigned to. Assignments are per preset and read with `08 C0 08 03 18 <preset> 3C 00 00 00`
+   once the shown preset has settled (reply `0x3D`; it names no preset, so the app remembers
+   what it asked for). Settings → "Show expression pedal" (NVS `expshow`, default on) draws the
+   indicators always or never; off also skips the ~40 UI updates/s while the pedal moves.
 
 Details and every other frame: NanoGig `docs/PROTOCOL.md`.
 

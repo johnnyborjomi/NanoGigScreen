@@ -44,6 +44,7 @@ static const char *TAG = "nanogig";
 #define NVS_KEY_META "meta"
 #define NVS_KEY_BANK "bank"
 #define NVS_KEY_LABEL_STYLE "lstyle"
+#define NVS_KEY_EXP_SHOW "expshow"
 #define SETTINGS_READ_DELAY_MS 400  /* after the first state dump / a mute ack: one write at a time on the link */
 #define META_MAGIC 0x4E474D31u      /* "NGM1" */
 
@@ -52,14 +53,14 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
     char detail[32];
     uint8_t fx_slot;
     bool fx_on;
-    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute */
+    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show */
     int delta;      /* MSG_TEMPO_DELTA */
     uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE */
     packet_t pkt;
@@ -116,6 +117,18 @@ static bool s_link_ready;
 /* Device settings (outputs 1/2 mute) are read once per link after the first state dump, and after every mute ack. */
 static bool s_settings_read_this_link;
 static int64_t s_settings_due_us;   /* 0 = none pending */
+/* Expression pedal: ~20 position + values events per second while it moves; the indicators hide a
+ * few seconds after the last one. Assignments are per preset and the 0x3D reply carries no preset
+ * number, so remember which one was asked for. */
+static int s_exp_pos = -1;          /* -1 = unknown on this link */
+static bool s_exp_show = true;      /* setting: draw the indicators (off skips the ~40 UI updates/s while the pedal moves) */
+static int s_exp_assign_preset = -1; /* preset whose assignments s_exp_assign holds */
+static int s_exp_assign_req = -1;    /* preset a request is out for */
+static int64_t s_exp_assign_req_us;
+static int s_exp_assign_tries;       /* unanswered requests for the current preset; stop after a few */
+static nano_exp_assignments_t s_exp_assign;
+#define EXP_ASSIGN_TIMEOUT_US (1500 * 1000)
+#define EXP_ASSIGN_MAX_TRIES 3
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -167,6 +180,17 @@ static uint8_t label_style_load(void)
     return v <= NANO_LABEL_NUMERIC ? v : 0;
 }
 
+static bool exp_show_load(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 1;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_KEY_EXP_SHOW, &v);
+        nvs_close(h);
+    }
+    return v != 0;
+}
+
 
 static void meta_save(void)
 {
@@ -215,6 +239,7 @@ static void ui_on_link(bool connect) { app_msg_t m = { .kind = MSG_LINK, .flag =
 static void ui_on_bank_size(uint8_t v) { app_msg_t m = { .kind = MSG_BANK_SIZE, .value = v }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_label_style(uint8_t v) { app_msg_t m = { .kind = MSG_LABEL_STYLE, .value = v }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_outputs_mute(bool mute) { app_msg_t m = { .kind = MSG_OUTPUTS_MUTE, .flag = mute }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_expression_show(bool show) { app_msg_t m = { .kind = MSG_EXP_SHOW, .flag = show }; xQueueSend(s_queue, &m, 0); }
 
 /* ---- requests ------------------------------------------------------------- */
 
@@ -264,6 +289,62 @@ static void request_settings(void)
 
 /* Outputs 1/2 mute: `08 C0 08 01 68 <1/0> 43 00 00 00` (Cortex Cloud's global switch); the 0x44 ack and the
  * settings reply's field 16 confirm. */
+static void request_exp_assignments(uint8_t preset)
+{
+    uint8_t frame[16];
+    size_t n = nano_build_exp_assign_request(frame, sizeof(frame), preset);
+    if (n && nano_ble_write(frame, n) == 0) {
+        s_exp_assign_req = preset;
+        s_exp_assign_req_us = esp_timer_get_time();
+        s_exp_assign_tries++;
+        ESP_LOGI(TAG, "-> expression assignments request (preset %u)", preset + 1);
+    }
+}
+
+static bool pending_preset_active(void);
+
+/*
+ * Assignments are per preset (Cortex Cloud's 0x3C): read them once the shown preset has settled
+ * (no select in flight, past the settle window) and they are not the ones we hold. One request at a
+ * time; a preset that never answers is asked a few times, then left alone until the preset changes.
+ */
+static void exp_assign_tick(void)
+{
+    if (!s_link_ready || !s_state_valid) return;
+    int64_t now = esp_timer_get_time();
+    if (s_exp_assign_req >= 0) {
+        if (now - s_exp_assign_req_us < EXP_ASSIGN_TIMEOUT_US) return;
+        ESP_LOGW(TAG, "expression assignments request (preset %d) unanswered", s_exp_assign_req + 1);
+        s_exp_assign_req = -1;
+    }
+    /* Only the select itself has to be through (acked and confirmed by a dump); no settle window here,
+     * it would hold the tile tracks back by 1.5 s after every tap. */
+    bool switching = pending_preset_active() || s_select_inflight;
+    if (switching || s_state.active_preset == s_exp_assign_preset) return;
+    if (s_exp_assign_tries >= EXP_ASSIGN_MAX_TRIES) return;
+    request_exp_assignments(s_state.active_preset);
+}
+
+/* Tile tracks belong to the shown preset: push its assignments, or none while they are unknown. */
+static void exp_push_assignments(uint8_t shown_preset)
+{
+    bool known = s_exp_assign_preset >= 0 && s_exp_assign_preset == shown_preset;
+    if (lvgl_port_lock(50)) {
+        nano_ui_set_expression_assignments(known ? &s_exp_assign : NULL);
+        lvgl_port_unlock();
+    }
+}
+
+static void exp_reset(void)
+{
+    s_exp_pos = -1;
+    if (lvgl_port_lock(50)) {
+        nano_ui_set_expression(-1);
+        nano_ui_set_expression_values(NULL);
+        lvgl_port_unlock();
+    }
+}
+
 static void set_outputs_mute(bool mute)
 {
     if (!s_link_ready) return;
@@ -320,6 +401,7 @@ static void select_preset(int delta)
     s_pending_preset = idx;
     s_pending_since_us = esp_timer_get_time();
     s_state.active_preset = (uint8_t)idx; /* optimistic; the dump confirms */
+    s_exp_assign_tries = 0;
     if (lvgl_port_lock(50)) {
         nano_ui_set_preset((uint8_t)idx, s_meta_valid ? &s_meta_blob.meta : NULL);
         lvgl_port_unlock();
@@ -484,6 +566,7 @@ static void on_state(const nano_state_t *in)
     }
     if (s_gate_written_us > requested_us) { copy.gate_on = s_state.gate_on; stale_tile = true; }
     if (stale_tile) schedule_state(CONFIRM_MS);
+    if (!s_state_valid || s_state.active_preset != st->active_preset) s_exp_assign_tries = 0;
     s_state = *st;
     s_state_valid = true;
     ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\", IR \"%s\", %.0f BPM, fw %s", st->active_preset + 1, st->capture_name, st->ir_short_name, st->tempo_bpm, st->firmware);
@@ -493,6 +576,7 @@ static void on_state(const nano_state_t *in)
         nano_ui_set_connected(true); /* the connect page closes only once the pedal's state is on screen */
         lvgl_port_unlock();
     }
+    exp_push_assignments(st->active_preset);
     bool switching = pending_preset_active() || s_select_inflight || esp_timer_get_time() - s_select_last_us < SELECT_SETTLE_US;
     if (!s_meta_requested_this_link && !switching && cache_contradicts_state(in)) request_metadata();
     else if (!s_settings_read_this_link && !s_settings_due_us) schedule_settings(SETTINGS_READ_DELAY_MS);
@@ -561,6 +645,8 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
             nano_ui_set_preset(ev.preset, s_meta_valid ? &s_meta_blob.meta : NULL);
             lvgl_port_unlock();
         }
+        exp_push_assignments(ev.preset);
+        s_exp_assign_tries = 0;
         schedule_state(0);
         break;
     case NANO_EV_PRESET_SELECT_ACK:
@@ -571,7 +657,9 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         /* The pedal's "changed" notice after our select comes ~50 ms before its ack: read the state now
          * (unless a newer target is waiting, which goes out on the ack). */
         if (s_select_inflight && s_pending_preset == s_select_sent) schedule_state(0);
-        else if (!s_select_inflight) schedule_state(DEBOUNCE_MS);
+        /* A block toggled on the pedal or over MIDI: the notice names nothing, so read the state right
+         * away (the min gap between requests absorbs bursts; no debounce, it cost ~0.5 s per toggle). */
+        else if (!s_select_inflight) schedule_state(0);
         break;
     case NANO_EV_CONTROL:
         if (ev.msg_type == NANO_MSG_ENCODER && ev.value >= 0 && s_state_valid) {
@@ -671,7 +759,46 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         schedule_settings(SETTINGS_READ_DELAY_MS); /* confirm against the pedal's own report */
         break;
     case NANO_EV_EXPRESSION:
-        break; /* not shown yet */
+        s_exp_pos = ev.position;
+        if (s_exp_show && lvgl_port_lock(20)) {
+            nano_ui_set_expression(ev.position);
+            lvgl_port_unlock();
+        }
+        break;
+    case NANO_EV_EXP_VALUES:
+        /* Paired with every position event; also an empty one after a preset load. */
+        if (s_exp_show && lvgl_port_lock(20)) {
+            nano_ui_set_expression_values(&ev.exp_values);
+            lvgl_port_unlock();
+        }
+        break;
+    case NANO_EV_EXP_ASSIGNMENTS: {
+        int preset = s_exp_assign_req;
+        s_exp_assign_req = -1;
+        if (preset < 0) {
+            ESP_LOGW(TAG, "<- expression assignments without a request; ignored");
+            break;
+        }
+        char desc[160];
+        int pos = 0;
+        static const char *const SLOT[NANO_FX_SLOT_COUNT] = { "pre1", "pre2", "post1", "post2", "post3" };
+        for (int i = 0; i < NANO_FX_SLOT_COUNT && pos < (int)sizeof(desc) - 24; i++) {
+            if (ev.exp_assign.fx_range[i].assigned) pos += snprintf(desc + pos, sizeof(desc) - pos, " %s %u-%u", SLOT[i], ev.exp_assign.fx_range[i].min, ev.exp_assign.fx_range[i].max);
+            if (ev.exp_assign.fx_bypass_mode[i]) pos += snprintf(desc + pos, sizeof(desc) - pos, " %s bypass(m%u)", SLOT[i], ev.exp_assign.fx_bypass_mode[i]);
+        }
+        ESP_LOGI(TAG, "<- expression assignments of preset %d (%d ms):%s%s%s%s", preset + 1, (int)((esp_timer_get_time() - s_exp_assign_req_us) / 1000), pos ? desc : " none",
+                 ev.exp_assign.capture_bypass ? " +capture bypass" : "", ev.exp_assign.ir_bypass ? " +IR bypass" : "",
+                 ev.exp_assign.amp_ranges ? " +amp knobs" : "");
+        bool same = preset == s_exp_assign_preset;
+        s_exp_assign = ev.exp_assign;
+        s_exp_assign_preset = preset;
+        if (!same && lvgl_port_lock(50)) {
+            nano_ui_set_expression_values(NULL); /* the old preset's values do not belong to these targets */
+            lvgl_port_unlock();
+        }
+        exp_push_assignments(s_state.active_preset);
+        break;
+    }
     default:
         ESP_LOGD(TAG, "event type 0x%02X (%u B) ignored", (unsigned)ev.msg_type, (unsigned)len);
         break;
@@ -695,9 +822,13 @@ static void on_status(nano_ble_status_t status, const char *detail)
         s_link_ready = false;
         s_state_due_us = 0;
         s_settings_due_us = 0;
+        s_exp_assign_preset = s_exp_assign_req = -1;
+        s_exp_assign_tries = 0;
         nano_assembler_reset(&s_asm);
+        exp_reset();
         if (lvgl_port_lock(50)) {
             nano_ui_set_outputs_muted(false); /* unknown until the next settings read */
+            nano_ui_set_expression_assignments(NULL);
             lvgl_port_unlock();
         }
     }
@@ -776,6 +907,14 @@ static void app_task(void *arg)
             case MSG_OUTPUTS_MUTE:
                 set_outputs_mute(m.flag);
                 break;
+            case MSG_EXP_SHOW:
+                s_exp_show = m.flag;
+                nvs_save_u8(NVS_KEY_EXP_SHOW, m.flag);
+                if (m.flag && lvgl_port_lock(50)) {
+                    nano_ui_set_expression(s_exp_pos); /* catch up with what the pedal sent while hidden */
+                    lvgl_port_unlock();
+                }
+                break;
             case MSG_BANK_SIZE:
                 bank_save(m.value);
                 if (lvgl_port_lock(50)) {
@@ -793,6 +932,7 @@ static void app_task(void *arg)
         }
         if (s_link_ready && s_state_due_us && esp_timer_get_time() >= s_state_due_us) request_state();
         if (s_link_ready && s_settings_due_us && esp_timer_get_time() >= s_settings_due_us) request_settings();
+        exp_assign_tick();
         if (!s_tuner_cleared && esp_timer_get_time() - s_last_pitch_us > TUNER_SILENCE_US) {
             s_tuner_cleared = true;
             if (lvgl_port_lock(20)) {
@@ -821,12 +961,14 @@ void app_main(void)
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
-        .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute,
+        .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute, .on_expression_show = ui_on_expression_show,
     };
     if (lvgl_port_lock(0)) {
         nano_ui_create(disp, &ui_cb);
         nano_ui_set_bank_size(bank_load());
         nano_ui_set_label_style(label_style_load());
+        s_exp_show = exp_show_load();
+        nano_ui_set_expression_show(s_exp_show);
         nano_ui_set_status("Starting Bluetooth", false);
         nano_ui_set_stale(true);
         nano_ui_set_connected(false);

@@ -110,6 +110,13 @@ size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mu
  */
 size_t nano_build_outputs_mute(uint8_t *out, size_t cap, bool mute);
 
+/*
+ * Read a preset's expression pedal assignments (Cortex Cloud's request on its Expression Pedal
+ * page, captured 2026-09-19): `08 C0 08 03 18 <preset> 3C 00 00 00`. The reply is type 0x3D and
+ * carries no preset number: remember which one was asked for.
+ */
+size_t nano_build_exp_assign_request(uint8_t *out, size_t cap, uint8_t preset_index);
+
 #ifdef __cplusplus
 }
 #endif

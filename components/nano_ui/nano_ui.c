@@ -39,6 +39,16 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define LINES_Y 126
 #define LINES_H 40
 #define EDGE_X 2          /* left edge shared by the prev button, the gate button and the first tile */
+#define EXP_BAR_W 3       /* expression pedal position: a thin bar in the right gutter, from the preset row to the tiles */
+#define EXP_BAR_X (SCREEN_W - EXP_BAR_W)
+#define RIGHT_X (EXP_BAR_X - 1) /* right edge of the next button and the last tile */
+#define EXP_BAR_Y ROW_Y
+#define EXP_BAR_H (TILE_Y + TILE_H - ROW_Y)
+#define TILE_EXP_H 6      /* per-tile expression track at the bottom of an assigned FX tile */
+#define TILE_EXP_INSET 4
+#define SETTING_X 12 /* one page today: the pager hides its column; add PAGER_W + 8 when a second page comes */
+#define SETTING_RIGHT (SCREEN_W - 12 - SETTING_X)
+#define SETTING_ROW_H 34
 #define GATE_W 40
 #define GATE_H 26
 #define TILE_Y 176
@@ -65,6 +75,15 @@ static lv_obj_t *s_capture_dot, *s_capture, *s_ir_dot, *s_ir;
 static lv_obj_t *s_tiles[NANO_FX_SLOT_COUNT], *s_tile_names[NANO_FX_SLOT_COUNT];
 static bool s_tile_present[NANO_FX_SLOT_COUNT];
 static bool s_tile_on[NANO_FX_SLOT_COUNT];
+static uint32_t s_tile_color[NANO_FX_SLOT_COUNT];
+/* Expression pedal: side bar + per-tile tracks (band = assigned range, fill = the value the pedal produces). */
+static lv_obj_t *s_exp_bar, *s_exp_fill;
+static lv_obj_t *s_tile_exp[NANO_FX_SLOT_COUNT], *s_tile_exp_band[NANO_FX_SLOT_COUNT], *s_tile_exp_fill[NANO_FX_SLOT_COUNT];
+static int s_exp_pos = -1;          /* -1 = unknown (drawn at the heel) */
+static bool s_exp_show = true;      /* setting: show the indicators at all */
+static bool s_exp_assign_valid, s_exp_values_valid;
+static nano_exp_assignments_t s_exp_assign;
+static nano_exp_values_t s_exp_values;
 static uint8_t s_preset;
 static uint8_t s_per_bank = 4;
 static nano_label_style_t s_label_style = NANO_LABEL_NUMBER_LETTER;
@@ -84,7 +103,7 @@ static bool s_link_enabled = true;
 static lv_point_t s_press_point;
 
 /* menu / settings / tuner */
-static lv_obj_t *s_link_btn_label, *s_bank_value, *s_style_seg[3], *s_style_hint, *s_mute_toggle, *s_mute_knob;
+static lv_obj_t *s_link_btn_label, *s_bank_value, *s_style_seg[3], *s_style_hint, *s_mute_toggle, *s_mute_knob, *s_exp_toggle, *s_exp_knob;
 
 
 static lv_obj_t *s_tuner_note, *s_tuner_cents, *s_tuner_bar, *s_tuner_verdict, *s_tuner_mute;
@@ -323,11 +342,38 @@ static void on_style_clicked(lv_event_t *e)
     if (s_cb.on_label_style) s_cb.on_label_style(style);
 }
 
+/* iPhone-style switch: a 52 x 28 pill with a round knob; `on_color` fills it while on. */
+static void set_toggle(lv_obj_t *pill, lv_obj_t *knob, bool on, uint32_t on_color)
+{
+    lv_obj_set_style_bg_color(pill, lv_color_hex(on ? on_color : C_OFF), 0);
+    lv_obj_align(knob, on ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID, on ? -3 : 3, 0);
+}
+static lv_obj_t *make_toggle(lv_obj_t *parent, int32_t y, lv_event_cb_t cb, lv_obj_t **knob_out)
+{
+    lv_obj_t *pill = make_box(parent, SETTING_RIGHT - 52, y + (SETTING_ROW_H - 28) / 2, 52, 28, C_OFF);
+    lv_obj_set_style_radius(pill, 14, 0);
+    lv_obj_set_clickable(pill, true);
+    lv_obj_set_ext_click_area(pill, 10);
+    lv_obj_add_event_cb(pill, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(pill, cb, LV_EVENT_CLICKED, NULL);
+    *knob_out = make_box(pill, 0, 0, 22, 22, C_TEXT);
+    lv_obj_set_style_radius(*knob_out, LV_RADIUS_CIRCLE, 0);
+    return pill;
+}
 static void refresh_mute(void)
 {
     lv_obj_set_hidden(s_mute_badge, !s_outputs_muted);
-    lv_obj_set_style_bg_color(s_mute_toggle, lv_color_hex(s_outputs_muted ? C_ERROR : C_OFF), 0);
-    lv_obj_align(s_mute_knob, s_outputs_muted ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID, s_outputs_muted ? -3 : 3, 0);
+    set_toggle(s_mute_toggle, s_mute_knob, s_outputs_muted, C_ERROR);
+}
+static void refresh_exp_toggle(void) { set_toggle(s_exp_toggle, s_exp_knob, s_exp_show, C_WARN); }
+static void refresh_expression(void);
+static void on_exp_toggle_clicked(lv_event_t *e)
+{
+    (void)e;
+    s_exp_show = !s_exp_show;
+    refresh_exp_toggle();
+    refresh_expression();
+    if (s_cb.on_expression_show) s_cb.on_expression_show(s_exp_show);
 }
 
 static void on_mute_toggle_clicked(lv_event_t *e)
@@ -379,7 +425,7 @@ static void build_main(lv_obj_t *scr)
     /* Preset row: prev | label + name | next. */
     const int32_t nav_y = ROW_Y + (ROW_H - NAV_H) / 2;
     s_prev = make_button(s_main, EDGE_X, nav_y, NAV_W, NAV_H, LV_SYMBOL_LEFT, &lv_font_montserrat_20, C_PANEL, C_MUTED, on_prev, NULL);
-    s_next = make_button(s_main, SCREEN_W - EDGE_X - NAV_W, nav_y, NAV_W, NAV_H, LV_SYMBOL_RIGHT, &lv_font_montserrat_20, C_PANEL, C_MUTED, on_next, NULL);
+    s_next = make_button(s_main, RIGHT_X - NAV_W, nav_y, NAV_W, NAV_H, LV_SYMBOL_RIGHT, &lv_font_montserrat_20, C_PANEL, C_MUTED, on_next, NULL);
     lv_obj_add_event_cb(s_prev, on_pressed, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_next, on_pressed, LV_EVENT_PRESSED, NULL);
     s_preset_label = make_label(s_main, &lv_font_montserrat_24, C_TEXT);
@@ -415,7 +461,7 @@ static void build_main(lv_obj_t *scr)
     lv_label_set_long_mode(s_ir, LV_LABEL_LONG_DOT);
 
     /* Five FX tiles: pre1 pre2 | post1 post2 post3. */
-    const int32_t gap = 3, group_gap = 4; /* 5 x 60 + 4 x 3 + 4 = 316: from EDGE_X to 318 */
+    const int32_t gap = 3, group_gap = 2; /* 5 x 60 + 4 x 3 + 2 = 314: from EDGE_X to RIGHT_X */
     for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) {
         lv_obj_t *t = make_box(s_main, EDGE_X + i * (TILE_W + gap) + (i >= 2 ? group_gap : 0), TILE_Y, TILE_W, TILE_H, C_PANEL);
         lv_obj_set_style_radius(t, 10, 0);
@@ -435,7 +481,102 @@ static void build_main(lv_obj_t *scr)
         lv_label_set_text(name, i < 2 ? "PRE" : "POST");
         s_tiles[i] = t;
         s_tile_names[i] = name;
+        /* Expression track along the bottom edge (inside the 2 px padding): black track, translucent
+         * band for the assigned range, solid fill for the value. Hidden until the pedal moves. */
+        const int32_t tw = TILE_W - 2 * 2 - 2 * TILE_EXP_INSET;
+        lv_obj_t *track = make_box(t, TILE_EXP_INSET, TILE_H - 2 * 2 - TILE_EXP_H - 3, tw, TILE_EXP_H, 0x000000);
+        lv_obj_set_style_bg_opa(track, LV_OPA_70, 0);
+        lv_obj_set_style_radius(track, TILE_EXP_H / 2, 0);
+        lv_obj_t *band = make_box(track, 0, 0, tw, TILE_EXP_H, C_TEXT);
+        lv_obj_set_style_bg_opa(band, LV_OPA_40, 0);
+        lv_obj_set_style_radius(band, TILE_EXP_H / 2, 0);
+        lv_obj_t *fill = make_box(track, 0, 1, 0, TILE_EXP_H - 2, C_TEXT);
+        lv_obj_set_style_radius(fill, (TILE_EXP_H - 2) / 2, 0);
+        lv_obj_set_hidden(track, true);
+        s_tile_exp[i] = track;
+        s_tile_exp_band[i] = band;
+        s_tile_exp_fill[i] = fill;
     }
+
+    /* Expression pedal position: a thin orange bar in the right gutter, filling from the heel (bottom). */
+    s_exp_bar = make_box(s_main, EXP_BAR_X, EXP_BAR_Y, EXP_BAR_W, EXP_BAR_H, C_PANEL_2);
+    lv_obj_set_style_radius(s_exp_bar, 1, 0);
+    s_exp_fill = make_box(s_main, EXP_BAR_X, EXP_BAR_Y + EXP_BAR_H, EXP_BAR_W, 0, C_WARN);
+    lv_obj_set_style_radius(s_exp_fill, 1, 0);
+    lv_obj_set_hidden(s_exp_bar, true);
+    lv_obj_set_hidden(s_exp_fill, true);
+}
+
+/* Redraw the expression indicators from the position, the assignments and the last values. */
+static void refresh_expression(void)
+{
+    bool live = s_exp_show;
+    int pos = s_exp_pos < 0 ? 0 : s_exp_pos;
+    lv_obj_set_hidden(s_exp_bar, !live);
+    lv_obj_set_hidden(s_exp_fill, !live);
+    if (live) {
+        int32_t h = (EXP_BAR_H * pos + 127) / 254;
+        lv_obj_set_size(s_exp_fill, EXP_BAR_W, h);
+        lv_obj_set_pos(s_exp_fill, EXP_BAR_X, EXP_BAR_Y + EXP_BAR_H - h);
+    }
+    const int32_t tw = TILE_W - 2 * 2 - 2 * TILE_EXP_INSET;
+    for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) {
+        const nano_exp_range_t *r = s_exp_assign_valid ? &s_exp_assign.fx_range[i] : NULL;
+        bool has_range = r && r->assigned;
+        bool has_bypass = s_exp_assign_valid && s_exp_assign.fx_bypass_mode[i] != 0;
+        bool show = live && s_tile_present[i] && (has_range || has_bypass);
+        lv_obj_set_hidden(s_tile_exp[i], !show);
+        if (!show) continue;
+        lv_obj_set_style_bg_color(s_tile_exp_band[i], lv_color_hex(s_tile_color[i]), 0);
+        lv_obj_set_style_bg_color(s_tile_exp_fill[i], lv_color_hex(s_tile_color[i]), 0);
+        int32_t fill_w;
+        if (has_range) {
+            /* Band = the range set in Cortex Cloud; fill = the value, which already lives inside it. Until
+             * the first values event of this preset, derive it from the position as the pedal maps it. */
+            int32_t bx = tw * r->min / 255, bw = tw * (r->max - r->min) / 255;
+            if (bw < 2) bw = 2;
+            lv_obj_set_pos(s_tile_exp_band[i], bx, 0);
+            lv_obj_set_width(s_tile_exp_band[i], bw);
+            int v = s_exp_values_valid && s_exp_values.fx_value[i] >= 0 ? s_exp_values.fx_value[i] : r->min + (r->max - r->min) * pos / 254;
+            fill_w = tw * v / 255;
+        } else {
+            /* Bypass only: the whole track is the band; full when the switch is engaged (heel side of mid-travel). */
+            lv_obj_set_pos(s_tile_exp_band[i], 0, 0);
+            lv_obj_set_width(s_tile_exp_band[i], tw);
+            bool engaged = s_exp_values_valid && s_exp_values.fx_bypass[i] >= 0 ? s_exp_values.fx_bypass[i] != 0 : pos < 127;
+            fill_w = engaged ? tw : 0;
+        }
+        if (fill_w > tw) fill_w = tw;
+        lv_obj_set_width(s_tile_exp_fill[i], fill_w);
+        lv_obj_set_pos(s_tile_exp_fill[i], 0, 1);
+    }
+}
+
+void nano_ui_set_expression(int position)
+{
+    s_exp_pos = position < 0 ? -1 : position > 254 ? 254 : position;
+    refresh_expression();
+}
+
+void nano_ui_set_expression_show(bool show)
+{
+    s_exp_show = show;
+    if (s_exp_toggle) refresh_exp_toggle();
+    refresh_expression();
+}
+
+void nano_ui_set_expression_assignments(const nano_exp_assignments_t *a)
+{
+    s_exp_assign_valid = a != NULL;
+    if (a) s_exp_assign = *a;
+    refresh_expression();
+}
+
+void nano_ui_set_expression_values(const nano_exp_values_t *v)
+{
+    s_exp_values_valid = v != NULL;
+    if (v) s_exp_values = *v;
+    refresh_expression();
 }
 
 /* ---- menu / settings / tuner views --------------------------------------- */
@@ -479,9 +620,6 @@ static void build_menu(lv_obj_t *scr)
 }
 
 /* One settings row: caption at the left, the control right-aligned to SETTING_RIGHT (page coordinates). */
-#define SETTING_X 12 /* one page today: the pager hides its column; add PAGER_W + 8 when a second page comes */
-#define SETTING_RIGHT (SCREEN_W - 12 - SETTING_X)
-#define SETTING_ROW_H 34
 
 static lv_obj_t *setting_caption(lv_obj_t *parent, int32_t y, const char *text)
 {
@@ -532,15 +670,14 @@ static void build_settings(lv_obj_t *scr)
     /* Mute outputs 1/2: a switch, red while muted (it silences the whole rig). */
     y = 118;
     setting_caption(page1, y, "Mute outputs 1/2");
-    s_mute_toggle = make_box(page1, SETTING_RIGHT - 52, y + (SETTING_ROW_H - 28) / 2, 52, 28, C_OFF);
-    lv_obj_set_style_radius(s_mute_toggle, 14, 0);
-    lv_obj_set_clickable(s_mute_toggle, true);
-    lv_obj_set_ext_click_area(s_mute_toggle, 10);
-    lv_obj_add_event_cb(s_mute_toggle, on_pressed, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(s_mute_toggle, on_mute_toggle_clicked, LV_EVENT_CLICKED, NULL);
-    s_mute_knob = make_box(s_mute_toggle, 0, 0, 22, 22, C_TEXT);
-    lv_obj_set_style_radius(s_mute_knob, LV_RADIUS_CIRCLE, 0);
+    s_mute_toggle = make_toggle(page1, y, on_mute_toggle_clicked, &s_mute_knob);
     refresh_mute();
+
+    /* Expression pedal indicators: the side bar and the tile tracks (~40 redraws/s while the pedal moves). */
+    y = 158;
+    setting_caption(page1, y, "Show expression pedal");
+    s_exp_toggle = make_toggle(page1, y, on_exp_toggle_clicked, &s_exp_knob);
+    refresh_exp_toggle();
 
     pager_show(&s_settings_pager, 0);
 }
@@ -880,7 +1017,7 @@ static void layout_preset_row(void)
     int32_t col_w = label_w > badges_w ? label_w : badges_w;
     int32_t col_x = EDGE_X + NAV_W + 4;
     int32_t x = col_x + col_w + (col_w ? 6 : 0);
-    int32_t w = SCREEN_W - EDGE_X - NAV_W - 4 - x;
+    int32_t w = RIGHT_X - NAV_W - 4 - x;
     const char *text = lv_label_get_text(s_preset_name);
     const lv_font_t *font = fit_font(text, w, max_h);
     lv_obj_set_style_text_font(s_preset_name, font, 0);
@@ -953,6 +1090,7 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
         s_tile_on[i] = on;
         nano_category_t cat = fx->model ? fx->model->category : NANO_CAT_UNKNOWN;
         uint32_t color = nano_category_color(cat);
+        s_tile_color[i] = color;
         const char *name = fx->model ? fx->model->name : (present ? fx->id : "");
         lv_label_set_text(s_tile_names[i], name);
         lv_obj_set_style_text_font(s_tile_names[i], tile_font(name, TILE_W - 4), 0);
@@ -970,6 +1108,7 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
             lv_obj_set_style_text_color(s_tile_names[i], lv_color_hex(C_TEXT), 0);
         }
     }
+    refresh_expression();
 }
 
 void nano_ui_set_tempo(float bpm, bool tapping)

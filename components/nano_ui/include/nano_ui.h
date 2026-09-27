@@ -50,6 +50,8 @@ typedef struct {
     void (*on_label_style)(uint8_t style);
     /* Settings toggled "Mute outputs 1/2": the app writes it to the pedal. */
     void (*on_outputs_mute)(bool mute);
+    /* Settings toggled "Show expression pedal": the app persists it. */
+    void (*on_expression_show)(bool show);
     /* Tempo view: - / + pressed (delta in BPM). */
     void (*on_tempo_delta)(int delta);
     /* Tempo view opened (true) / closed (false) from the screen: the app puts the pedal in / out of tap tempo mode. */
@@ -96,6 +98,16 @@ void nano_ui_open_tuner_from_pedal(void);
 void nano_ui_open_tempo_from_pedal(void);
 /* The pedal left a mode itself: back to the main view without sending anything. */
 void nano_ui_close_from_pedal(void);
+/*
+ * Expression pedal. While the "Show expression pedal" setting is on, the side bar and the tracks on
+ * the assigned FX tiles are always drawn: position 0..254 (heel..toe), -1 = unknown (drawn at the
+ * heel). Assignments belong to the shown preset (NULL = none / unknown); values are what the pedal
+ * produced for them (NULL = none yet, derived from the position).
+ */
+void nano_ui_set_expression_show(bool show);
+void nano_ui_set_expression(int position);
+void nano_ui_set_expression_assignments(const nano_exp_assignments_t *a);
+void nano_ui_set_expression_values(const nano_exp_values_t *v);
 /* Mute state as the pedal reports it (tuner report field 7). */
 void nano_ui_set_tuner_mute(bool muted);
 

@@ -208,6 +208,48 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
         out->position = pos > 254 ? 254 : (uint8_t)pos;
         return;
     }
+    case NANO_MSG_EXPRESSION_VALUES: {
+        /* One varint per assigned target: FX amounts pre1..post3 at fields 9..13 (0..255), FX bypass
+         * flags at 17..21; `06 C0 08 01 AA 00 00 00` after a preset load with nothing assigned. */
+        out->kind = NANO_EV_EXP_VALUES;
+        for (uint32_t i = 0; i < NANO_FX_SLOT_COUNT; i++) {
+            int64_t v = nano_first_varint(body, plen, 9 + i, -1);
+            out->exp_values.fx_value[i] = v < 0 ? -1 : (int16_t)(v > 255 ? 255 : v);
+            int64_t b = nano_first_varint(body, plen, 17 + i, -1);
+            out->exp_values.fx_bypass[i] = b < 0 ? -1 : (b != 0);
+        }
+        return;
+    }
+    case NANO_MSG_EXP_ASSIGN_REPLY: {
+        /* `08 01` then one sub-message per assigned target, numbered one below Cortex Cloud's write:
+         * ranges `{1: flag, 2: min, 3: max}` at 3..6 (gain, bass, mid, treble), 7..11 (pre1..post3),
+         * 20 (level); bypasses `{<mode>: {...}}` at 13 (capture), 14 (IR), 15..19 (pre1..post3). */
+        out->kind = NANO_EV_EXP_ASSIGNMENTS;
+        nano_exp_assignments_t *a = &out->exp_assign;
+        const uint8_t *sub;
+        size_t sub_len;
+        for (uint32_t i = 0; i < NANO_FX_SLOT_COUNT; i++) {
+            if (nano_first_bytes(body, plen, 7 + i, &sub, &sub_len)) {
+                int64_t lo = nano_first_varint(sub, sub_len, 2, 0), hi = nano_first_varint(sub, sub_len, 3, 255);
+                a->fx_range[i].assigned = true;
+                a->fx_range[i].min = lo < 0 ? 0 : lo > 255 ? 255 : (uint8_t)lo;
+                a->fx_range[i].max = hi < 0 ? 0 : hi > 255 ? 255 : (uint8_t)hi;
+                if (a->fx_range[i].max < a->fx_range[i].min) a->fx_range[i].max = a->fx_range[i].min;
+            }
+            if (nano_first_bytes(body, plen, 15 + i, &sub, &sub_len)) {
+                nano_field_t f;
+                nano_proto_iter_t it;
+                nano_proto_iter_init(&it, sub, sub_len);
+                a->fx_bypass_mode[i] = nano_proto_next(&it, &f) && f.wire == NANO_WIRE_BYTES && f.field < 255 ? (uint8_t)f.field : 2;
+                if (!a->fx_bypass_mode[i]) a->fx_bypass_mode[i] = 2;
+            }
+        }
+        a->capture_bypass = nano_has_field(body, plen, 13);
+        a->ir_bypass = nano_has_field(body, plen, 14);
+        for (uint32_t f = 3; f <= 6; f++) a->amp_ranges += nano_has_field(body, plen, f);
+        a->amp_ranges += nano_has_field(body, plen, 20);
+        return;
+    }
     case NANO_MSG_TUNER_PITCH: {
         float cents;
         if (!nano_first_string(body, plen, 4, out->note, sizeof(out->note)) || !nano_first_fixed32_float(body, plen, 5, &cents)) return;

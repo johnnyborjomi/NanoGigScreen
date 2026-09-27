@@ -103,6 +103,14 @@ size_t nano_build_outputs_mute(uint8_t *out, size_t cap, bool mute)
     return 10;
 }
 
+size_t nano_build_exp_assign_request(uint8_t *out, size_t cap, uint8_t preset_index)
+{
+    if (cap < 10 || preset_index >= NANO_PRESET_COUNT) return 0;
+    const uint8_t frame[10] = { 0x08, 0xC0, 0x08, 0x03, 0x18, preset_index, 0x3C, 0x00, 0x00, 0x00 };
+    memcpy(out, frame, 10);
+    return 10;
+}
+
 size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mute)
 {
     if (cap < 17 || reference_hz < 400.0f || reference_hz > 480.0f) return 0;

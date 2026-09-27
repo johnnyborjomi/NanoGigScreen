@@ -381,6 +381,48 @@ static void test_labels_and_models(void)
     CHECK(nano_category_light_text(NANO_CAT_MODULATION) && !nano_category_light_text(NANO_CAT_DELAY));
 }
 
+/* Expression pedal (Cortex Cloud captures of 2026-09-19, NanoGig `src/fixtures/hardware-2026-09-19.ts`). */
+static void test_expression(void)
+{
+    printf("expression\n");
+    uint8_t pkt[80];
+    nano_event_t e;
+    /* Values: post 3 = 78 alone; post 2 and post 3 = 224; nothing assigned. */
+    size_t n = from_hex("08 C0 08 01 68 4E AA 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_EXP_VALUES && e.exp_values.fx_value[4] == 78 && e.exp_values.fx_value[3] == -1 && e.exp_values.fx_bypass[4] == -1);
+    n = from_hex("0C C0 08 01 60 E0 01 68 E0 01 AA 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_EXP_VALUES && e.exp_values.fx_value[3] == 224 && e.exp_values.fx_value[4] == 224 && e.exp_values.fx_value[0] == -1);
+    n = from_hex("06 C0 08 01 AA 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_EXP_VALUES);
+    for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) CHECK(e.exp_values.fx_value[i] == -1 && e.exp_values.fx_bypass[i] == -1);
+    /* Everything assigned, pedal at 96: FX amounts 9..13 = 96, the heel-toe bypass flags 17..21 = 1. */
+    n = from_hex("2E C0 08 01 20 60 28 60 30 60 38 60 40 60 48 60 50 60 58 60 60 60 68 60 70 60 88 01 01 90 01 01 98 01 01 A0 01 01 A8 01 01 B0 01 01 AA 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_EXP_VALUES);
+    for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) CHECK(e.exp_values.fx_value[i] == 96 && e.exp_values.fx_bypass[i] == 1);
+    /* Assignment replies: post 3 at 17..130 (preset 58) and 15..127 (preset 2). */
+    n = from_hex("0D C0 08 01 5A 05 10 11 18 82 01 3D 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_EXP_ASSIGNMENTS && e.exp_assign.fx_range[4].assigned && e.exp_assign.fx_range[4].min == 17 && e.exp_assign.fx_range[4].max == 130);
+    CHECK(!e.exp_assign.fx_range[3].assigned && e.exp_assign.fx_bypass_mode[4] == 0 && !e.exp_assign.capture_bypass && e.exp_assign.amp_ranges == 0);
+    n = from_hex("0C C0 08 01 5A 04 10 0F 18 7F 3D 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_EXP_ASSIGNMENTS && e.exp_assign.fx_range[4].min == 15 && e.exp_assign.fx_range[4].max == 127);
+    /* Synthetic (write numbering - 1): pre 1 range 0..255 at 7, post 3 heel-toe bypass at 19, capture bypass at 13, gain at 3. */
+    n = from_hex("29 C0 08 01 1A 07 08 00 10 00 18 FF 01 3A 07 08 00 10 00 18 FF 01 6A 06 12 04 08 00 10 00 9A 01 06 12 04 08 00 10 00 3D 00 00 00", pkt, sizeof(pkt));
+    nano_decode_event(pkt, n, &e);
+    CHECK(e.kind == NANO_EV_EXP_ASSIGNMENTS && e.exp_assign.fx_range[0].assigned && e.exp_assign.fx_range[0].min == 0 && e.exp_assign.fx_range[0].max == 255);
+    CHECK(e.exp_assign.fx_bypass_mode[4] == 2 && e.exp_assign.fx_bypass_mode[0] == 0 && e.exp_assign.capture_bypass && !e.exp_assign.ir_bypass && e.exp_assign.amp_ranges == 1);
+    /* Request frame. */
+    uint8_t m[16];
+    const uint8_t want[] = { 0x08, 0xC0, 0x08, 0x03, 0x18, 0x3A, 0x3C, 0x00, 0x00, 0x00 };
+    CHECK(nano_build_exp_assign_request(m, sizeof(m), 58) == 10 && memcmp(m, want, 10) == 0);
+    CHECK(nano_build_exp_assign_request(m, sizeof(m), 64) == 0);
+}
+
 int main(void)
 {
     test_varint();
@@ -392,6 +434,7 @@ int main(void)
     test_events();
     test_metadata();
     test_labels_and_models();
+    test_expression();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

@@ -74,12 +74,38 @@ typedef enum {
     NANO_EV_CONTROL,           /* knob / encoder / generic change: re-read state (debounced) */
     NANO_EV_PRESET_SELECT_ACK,
     NANO_EV_EXPRESSION,        /* position 0..254 */
+    NANO_EV_EXP_VALUES,        /* values the pedal produced for its assigned targets (type 0xAA, with every position) */
+    NANO_EV_EXP_ASSIGNMENTS,   /* a preset's expression assignments (type 0x3D, reply to nano_build_exp_assign_request) */
     NANO_EV_TUNER_PITCH,       /* note, cents, in tune */
     NANO_EV_TUNER_ACK,         /* on/off + reference */
     NANO_EV_SETTINGS,          /* device settings reply (type 0x42): outputs_muted */
     NANO_EV_OUTPUTS_MUTE_ACK,  /* ack to the outputs-mute write (type 0x44) */
     NANO_EV_TAP_TEMPO,         /* tempo while tapping / when the tap tempo mode ends (2026-09-26) */
 } nano_event_kind_t;
+
+/* One FX amount range on the pedal's 0..255 scale (Cortex Cloud shows 0..100 %). */
+typedef struct {
+    bool assigned;
+    uint8_t min, max;
+} nano_exp_range_t;
+
+/*
+ * A preset's expression pedal assignments as far as the screen shows them: the FX amount ranges
+ * and the FX bypass switches (pre1, pre2, post1, post2, post3). Amp knobs, level and the
+ * capture / IR bypasses are decoded only as flags for the log.
+ */
+typedef struct {
+    nano_exp_range_t fx_range[NANO_FX_SLOT_COUNT];
+    uint8_t fx_bypass_mode[NANO_FX_SLOT_COUNT]; /* 0 = none; 2 = heel-toe (flips at mid-travel); 1 / 3 = toe switch modes */
+    bool capture_bypass, ir_bypass;
+    uint8_t amp_ranges;                         /* how many of gain / bass / mid / treble / level are assigned */
+} nano_exp_assignments_t;
+
+/* What the pedal produced for the assigned FX (type 0xAA): -1 = not assigned / absent. */
+typedef struct {
+    int16_t fx_value[NANO_FX_SLOT_COUNT];  /* 0..255 after the range is applied */
+    int8_t fx_bypass[NANO_FX_SLOT_COUNT];  /* 0 / 1 */
+} nano_exp_values_t;
 
 typedef struct {
     nano_event_kind_t kind;
@@ -98,6 +124,8 @@ typedef struct {
     bool outputs_muted;        /* SETTINGS field 16 (absent = outputs on) */
     uint8_t selector;          /* CONTROL from 0x1C: field 3 (1 capture bypass, 3 cab / IR slot, 4 capture slot), 0 when absent */
     int32_t value;             /* CONTROL from 0x1C: field 4, -1 when absent */
+    nano_exp_values_t exp_values;         /* EXP_VALUES */
+    nano_exp_assignments_t exp_assign;    /* EXP_ASSIGNMENTS */
 } nano_event_t;
 
 /* Decode a single-packet live message (full packet including the 2-byte header). */
