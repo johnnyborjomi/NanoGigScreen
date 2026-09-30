@@ -10,6 +10,8 @@
  * from JulietaUla/Montserrat (OFL): tools/fonts.md has the command. */
 LV_FONT_DECLARE(montserrat_medium_10)
 LV_FONT_DECLARE(montserrat_medium_12)
+/* Montserrat Bold 10 for the category tag at the top of each FX tile. */
+LV_FONT_DECLARE(montserrat_bold_10)
 
 /* NanoGig palette (src/ui/styles.css). */
 #define C_BG 0x07090C
@@ -36,7 +38,7 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define ROW_H 94
 #define NAV_W 36          /* prev / next buttons: narrower and shorter than the row, centred on it */
 #define NAV_H 66
-#define LINES_Y 126
+#define LINES_Y 120       /* capture / IR / gate row, pulled up to give the tiles room for the category tag */
 #define LINES_H 40
 #define EDGE_X 2          /* left edge shared by the prev button, the gate button and the first tile */
 #define EXP_BAR_W 3       /* expression pedal position: a thin bar in the right gutter, from the preset row to the tiles */
@@ -51,9 +53,11 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define SETTING_ROW_H 34
 #define GATE_W 40
 #define GATE_H 26
-#define TILE_Y 176
+#define TILE_Y 164
 #define TILE_W 60
-#define TILE_H 60
+#define TILE_H 72
+#define TILE_TAG_Y 3      /* category tag: just under the top border, same spot on and off */
+#define TILE_NAME_DY 6    /* name centred in the space below the tag */
 
 static nano_ui_callbacks_t s_cb;
 static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
@@ -72,7 +76,7 @@ static lv_obj_t *s_status_dot, *s_status, *s_tempo, *s_gate;
 static bool s_gate_on;
 static lv_obj_t *s_preset_label, *s_preset_name, *s_prev, *s_next;
 static lv_obj_t *s_capture_dot, *s_capture, *s_ir_dot, *s_ir;
-static lv_obj_t *s_tiles[NANO_FX_SLOT_COUNT], *s_tile_names[NANO_FX_SLOT_COUNT];
+static lv_obj_t *s_tiles[NANO_FX_SLOT_COUNT], *s_tile_names[NANO_FX_SLOT_COUNT], *s_tile_tags[NANO_FX_SLOT_COUNT];
 static bool s_tile_present[NANO_FX_SLOT_COUNT];
 static bool s_tile_on[NANO_FX_SLOT_COUNT];
 static uint32_t s_tile_color[NANO_FX_SLOT_COUNT];
@@ -515,10 +519,17 @@ static void build_main(lv_obj_t *scr)
         lv_obj_set_width(name, TILE_W - 4);
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
-        lv_obj_center(name);
+        lv_obj_align(name, LV_ALIGN_CENTER, 0, TILE_NAME_DY);
         lv_label_set_text(name, i < 2 ? "PRE" : "POST");
+        /* Category tag ("CMP", "DLY", ...) under the top border; it never moves, only recolours. */
+        lv_obj_t *tag = make_label(t, &montserrat_bold_10, C_DIM);
+        lv_obj_set_width(tag, TILE_W - 4);
+        lv_obj_set_style_text_align(tag, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(tag, 0, TILE_TAG_Y);
+        lv_label_set_text(tag, "");
         s_tiles[i] = t;
         s_tile_names[i] = name;
+        s_tile_tags[i] = tag;
         /* Expression track along the bottom edge (inside the 2 px padding): black track, translucent
          * band for the assigned range, solid fill for the value. Hidden until the pedal moves. */
         const int32_t tw = TILE_W - 2 * 2 - 2 * TILE_EXP_INSET;
@@ -1174,18 +1185,23 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
         const char *name = fx->model ? fx->model->name : (present ? fx->id : "");
         lv_label_set_text(s_tile_names[i], name);
         lv_obj_set_style_text_font(s_tile_names[i], tile_font(name, TILE_W - 4), 0);
+        lv_label_set_text(s_tile_tags[i], present ? nano_category_short(cat) : "");
         if (!present) {
             lv_obj_set_style_bg_color(s_tiles[i], lv_color_hex(C_BG), 0);
             lv_obj_set_style_border_color(s_tiles[i], lv_color_hex(0x262D37), 0);
             lv_obj_set_style_text_color(s_tile_names[i], lv_color_hex(C_DIM), 0);
         } else if (on) {
+            uint32_t text = nano_category_light_text(cat) ? C_TEXT : C_FX_TEXT;
             lv_obj_set_style_bg_color(s_tiles[i], lv_color_hex(color), 0);
             lv_obj_set_style_border_color(s_tiles[i], lv_color_hex(color), 0);
-            lv_obj_set_style_text_color(s_tile_names[i], lv_color_hex(nano_category_light_text(cat) ? C_TEXT : C_FX_TEXT), 0);
+            lv_obj_set_style_text_color(s_tile_names[i], lv_color_hex(text), 0);
+            lv_obj_set_style_text_color(s_tile_tags[i], lv_color_mix(lv_color_hex(text), lv_color_hex(color), 170), 0);
         } else {
             lv_obj_set_style_bg_color(s_tiles[i], lv_color_hex(C_OFF), 0);
             lv_obj_set_style_border_color(s_tiles[i], lv_color_mix(lv_color_hex(color), lv_color_hex(C_OFF), 140), 0);
             lv_obj_set_style_text_color(s_tile_names[i], lv_color_hex(C_TEXT), 0);
+            /* Off: the tag carries the category colour, a touch brighter than the border. */
+            lv_obj_set_style_text_color(s_tile_tags[i], lv_color_mix(lv_color_hex(color), lv_color_hex(C_OFF), 190), 0);
         }
     }
     refresh_expression();

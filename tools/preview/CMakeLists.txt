@@ -15,7 +15,7 @@ target_compile_options(lvgl PRIVATE -w -O1)
 
 add_subdirectory(${ROOT}/components/nano_protocol nano_protocol)
 
-add_library(nano_ui STATIC ${ROOT}/components/nano_ui/nano_ui.c ${ROOT}/components/nano_ui/fonts/montserrat_medium_10.c ${ROOT}/components/nano_ui/fonts/montserrat_medium_12.c)
+add_library(nano_ui STATIC ${ROOT}/components/nano_ui/nano_ui.c ${ROOT}/components/nano_ui/fonts/montserrat_medium_10.c ${ROOT}/components/nano_ui/fonts/montserrat_medium_12.c ${ROOT}/components/nano_ui/fonts/montserrat_bold_10.c)
 target_include_directories(nano_ui PUBLIC ${ROOT}/components/nano_ui/include)
 target_link_libraries(nano_ui PUBLIC lvgl nano_protocol)
 

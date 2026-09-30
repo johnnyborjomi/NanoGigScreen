@@ -383,6 +383,9 @@ static void test_labels_and_models(void)
     CHECK(nano_lookup_fx_model("C6BB01") && nano_lookup_fx_model("C6BB01")->category == NANO_CAT_FILTER);
     CHECK(nano_category_color(NANO_CAT_WAH) != nano_category_color(NANO_CAT_UTILITY));
     CHECK(nano_category_light_text(NANO_CAT_EQ));
+    CHECK(strcmp(nano_category_short(NANO_CAT_COMPRESSOR), "CMP") == 0 && strcmp(nano_category_short(NANO_CAT_EQ), "EQ") == 0);
+    CHECK(strcmp(nano_category_short(NANO_CAT_UNKNOWN), "") == 0 && strcmp(nano_category_short((nano_category_t)99), "") == 0);
+    for (int c = 1; c < NANO_CAT_COUNT; c++) CHECK(strlen(nano_category_short((nano_category_t)c)) >= 2);
     CHECK(nano_lookup_fx_model("ZZ") == NULL && nano_lookup_fx_model("") == NULL);
     CHECK(nano_category_color(NANO_CAT_DELAY) == 0x00F0D8);
     CHECK(nano_category_light_text(NANO_CAT_MODULATION) && !nano_category_light_text(NANO_CAT_DELAY));

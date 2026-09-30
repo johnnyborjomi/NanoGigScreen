@@ -39,6 +39,8 @@ typedef struct {
 /* NULL when the ID is not in the catalogue. `id_hex` must be uppercase, no spaces. */
 const nano_fx_model_t *nano_lookup_fx_model(const char *id_hex);
 const char *nano_category_name(nano_category_t c);
+/* Short tag for the tiles ("CMP", "DRV", "PTCH", ...); "" for unknown. */
+const char *nano_category_short(nano_category_t c);
 /* 0xRRGGBB tile colour for the category. */
 uint32_t nano_category_color(nano_category_t c);
 /* True when dark text is unreadable on the category colour (indigo modulation, royal blue EQ). */

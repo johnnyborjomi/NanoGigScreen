@@ -80,6 +80,15 @@ const char *nano_category_name(nano_category_t c)
     return (c >= 0 && c < NANO_CAT_COUNT) ? CATEGORY_NAMES[c] : CATEGORY_NAMES[0];
 }
 
+static const char *const CATEGORY_SHORT[NANO_CAT_COUNT] = {
+    "", "DRV", "CMP", "MOD", "DLY", "RVB", "PTCH", "WAH", "FLT", "UTL", "EQ",
+};
+
+const char *nano_category_short(nano_category_t c)
+{
+    return (c >= 0 && c < NANO_CAT_COUNT) ? CATEGORY_SHORT[c] : CATEGORY_SHORT[0];
+}
+
 /* NanoGig `--fx-*` tokens. Reverb is shifted to azure so it stays apart from delay on stage. */
 static const uint32_t CATEGORY_COLORS[NANO_CAT_COUNT] = {
     0xA8A29E, /* unknown */
