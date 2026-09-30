@@ -23,9 +23,10 @@ typedef enum {
     NANO_CAT_DELAY,
     NANO_CAT_REVERB,
     NANO_CAT_PITCH,
-    NANO_CAT_WAH_FILTER,
+    NANO_CAT_WAH,
+    NANO_CAT_FILTER,
     NANO_CAT_UTILITY,
-    NANO_CAT_UTILITY_EQ,
+    NANO_CAT_EQ,
     NANO_CAT_COUNT,
 } nano_category_t;
 
@@ -40,7 +41,7 @@ const nano_fx_model_t *nano_lookup_fx_model(const char *id_hex);
 const char *nano_category_name(nano_category_t c);
 /* 0xRRGGBB tile colour for the category. */
 uint32_t nano_category_color(nano_category_t c);
-/* True when dark text is unreadable on the category colour (indigo modulation). */
+/* True when dark text is unreadable on the category colour (indigo modulation, royal blue EQ). */
 bool nano_category_light_text(nano_category_t c);
 
 #ifdef __cplusplus

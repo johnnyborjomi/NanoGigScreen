@@ -375,7 +375,14 @@ static void test_labels_and_models(void)
     nano_decode_event(muted, sizeof(muted), &ev); CHECK(ev.kind == NANO_EV_SETTINGS && ev.outputs_muted);
     const uint8_t on[] = { 0x06, 0xC0, 0x08, 0x01, 0x42, 0x00, 0x00, 0x00 };
     nano_decode_event(on, sizeof(on), &ev); CHECK(ev.kind == NANO_EV_SETTINGS && !ev.outputs_muted);
-    CHECK(nano_lookup_fx_model("A51F") && nano_lookup_fx_model("A51F")->category == NANO_CAT_UTILITY_EQ);
+    CHECK(nano_lookup_fx_model("A51F") && nano_lookup_fx_model("A51F")->category == NANO_CAT_EQ);
+    /* Neural's device list / Cortex Cloud 2026-10-01: ST compressors are compressors, wah and filter differ. */
+    CHECK(nano_lookup_fx_model("9427") && nano_lookup_fx_model("9427")->category == NANO_CAT_COMPRESSOR);
+    CHECK(nano_lookup_fx_model("8B7D") && nano_lookup_fx_model("8B7D")->category == NANO_CAT_UTILITY);
+    CHECK(nano_lookup_fx_model("B646") && nano_lookup_fx_model("B646")->category == NANO_CAT_WAH);
+    CHECK(nano_lookup_fx_model("C6BB01") && nano_lookup_fx_model("C6BB01")->category == NANO_CAT_FILTER);
+    CHECK(nano_category_color(NANO_CAT_WAH) != nano_category_color(NANO_CAT_UTILITY));
+    CHECK(nano_category_light_text(NANO_CAT_EQ));
     CHECK(nano_lookup_fx_model("ZZ") == NULL && nano_lookup_fx_model("") == NULL);
     CHECK(nano_category_color(NANO_CAT_DELAY) == 0x00F0D8);
     CHECK(nano_category_light_text(NANO_CAT_MODULATION) && !nano_category_light_text(NANO_CAT_DELAY));

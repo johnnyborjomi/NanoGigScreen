@@ -2,7 +2,10 @@
 
 #include <string.h>
 
-/* The EQ models are listed under both Utility and Utility/EQ upstream; Utility/EQ wins here. */
+/* Categories follow Neural's device list (neuraldsp.com/nano-cortex-device-list, 2026-10-01) and
+ * Cortex Cloud's colouring: the "(ST)" compressors are compressors (upstream filed them under
+ * Utility/EQ, which painted a Post-slot compressor white), Doubler is a utility, EQ is its own
+ * category, and Wah and Filter are separate. Mirrors NanoGig `src/protocol/models.ts`. */
 static const nano_fx_model_t MODELS[] = {
     { "12", "Chief BD2", NANO_CAT_OVERDRIVE },
     { "0D", "Chief OD1", NANO_CAT_OVERDRIVE },
@@ -18,25 +21,25 @@ static const nano_fx_model_t MODELS[] = {
     { "817D", "Adaptive Gate", NANO_CAT_UTILITY },
     { "827D", "Utility Gate", NANO_CAT_UTILITY },
     { "867D", "Volume", NANO_CAT_UTILITY },
-    { "B446", "Bass Wah", NANO_CAT_WAH_FILTER },
-    { "B246", "Bubba Wah", NANO_CAT_WAH_FILTER },
-    { "B646", "Crying Clyde Wah", NANO_CAT_WAH_FILTER },
-    { "B546", "Crying Wah", NANO_CAT_WAH_FILTER },
-    { "C6BB01", "Envelope Filter", NANO_CAT_WAH_FILTER },
-    { "C1BB01", "Love Meat", NANO_CAT_WAH_FILTER },
+    { "B446", "Bass Wah", NANO_CAT_WAH },
+    { "B246", "Bubba Wah", NANO_CAT_WAH },
+    { "B646", "Crying Clyde Wah", NANO_CAT_WAH },
+    { "B546", "Crying Wah", NANO_CAT_WAH },
+    { "C6BB01", "Envelope Filter", NANO_CAT_FILTER },
+    { "C1BB01", "Love Meat", NANO_CAT_FILTER },
     { "8927", "Legendary 87 (M)", NANO_CAT_COMPRESSOR },
     { "8F27", "Opto Comp (M)", NANO_CAT_COMPRESSOR },
     { "8C27", "Solid State Comp (M)", NANO_CAT_COMPRESSOR },
     { "8D27", "VCA Comp (M)", NANO_CAT_COMPRESSOR },
     { "D18C01", "Transpose", NANO_CAT_PITCH },
-    { "8B7D", "Doubler", NANO_CAT_UTILITY_EQ },
-    { "A51F", "Graphic 9", NANO_CAT_UTILITY_EQ },
-    { "A31F", "Low-High Cut", NANO_CAT_UTILITY_EQ },
-    { "A11F", "Parametric 3", NANO_CAT_UTILITY_EQ },
-    { "9427", "Legendary 87 (ST)", NANO_CAT_UTILITY_EQ },
-    { "9727", "Opto Comp (ST)", NANO_CAT_UTILITY_EQ },
-    { "9527", "Solid State Comp (ST)", NANO_CAT_UTILITY_EQ },
-    { "9627", "VCA Comp (ST)", NANO_CAT_UTILITY_EQ },
+    { "8B7D", "Doubler", NANO_CAT_UTILITY },
+    { "A51F", "Graphic 9", NANO_CAT_EQ },
+    { "A31F", "Low-High Cut", NANO_CAT_EQ },
+    { "A11F", "Parametric 3", NANO_CAT_EQ },
+    { "9427", "Legendary 87 (ST)", NANO_CAT_COMPRESSOR },
+    { "9727", "Opto Comp (ST)", NANO_CAT_COMPRESSOR },
+    { "9527", "Solid State Comp (ST)", NANO_CAT_COMPRESSOR },
+    { "9627", "VCA Comp (ST)", NANO_CAT_COMPRESSOR },
     { "F036", "Chief CE2W (ST)", NANO_CAT_MODULATION },
     { "F336", "Chief DC2W (ST)", NANO_CAT_MODULATION },
     { "EF36", "Chorus 229T", NANO_CAT_MODULATION },
@@ -69,7 +72,7 @@ const nano_fx_model_t *nano_lookup_fx_model(const char *id_hex)
 }
 
 static const char *const CATEGORY_NAMES[NANO_CAT_COUNT] = {
-    "Unknown", "Overdrive", "Compressor", "Modulation", "Delay", "Reverb", "Pitch", "Wah/Filter", "Utility", "Utility/EQ",
+    "Unknown", "Overdrive", "Compressor", "Modulation", "Delay", "Reverb", "Pitch", "Wah", "Filter", "Utility", "EQ",
 };
 
 const char *nano_category_name(nano_category_t c)
@@ -86,9 +89,10 @@ static const uint32_t CATEGORY_COLORS[NANO_CAT_COUNT] = {
     0x00F0D8, /* delay */
     0x3D9BFF, /* reverb */
     0xFFD23F, /* pitch */
-    0xF050C8, /* wah/filter */
+    0xC2E3F4, /* wah: white in the app, shifted halfway to the filter blue so it is not a utility */
+    0x93D4F5, /* filter (sky blue, sampled 2026-10-01) */
     0xF2F2F2, /* utility */
-    0xF2F2F2, /* utility/eq */
+    0x3A62D6, /* eq (royal blue, sampled 2026-10-01) */
 };
 
 uint32_t nano_category_color(nano_category_t c)
@@ -98,5 +102,5 @@ uint32_t nano_category_color(nano_category_t c)
 
 bool nano_category_light_text(nano_category_t c)
 {
-    return c == NANO_CAT_MODULATION;
+    return c == NANO_CAT_MODULATION || c == NANO_CAT_EQ;
 }
