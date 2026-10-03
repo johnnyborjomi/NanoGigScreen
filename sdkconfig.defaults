@@ -45,3 +45,15 @@ CONFIG_CYD_PANEL_INVERT=n
 CONFIG_CYD_ROTATE_180=n
 CONFIG_CYD_TOUCH_MIRROR_X=n
 CONFIG_CYD_TOUCH_MIRROR_Y=n
+
+# Firmware updates over Wi-Fi (components/nano_ota): two 1.94 MB OTA slots (partitions.csv), the
+# bootloader rolls back an image that never calls nano_ota_mark_valid, HTTPS with the common CA set.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+# Wi-Fi + Bluetooth overflow the classic ESP32's IRAM: Wi-Fi fast paths run from flash (a slower
+# download is fine, Wi-Fi only runs in update mode).
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n

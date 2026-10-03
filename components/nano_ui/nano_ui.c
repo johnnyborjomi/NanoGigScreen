@@ -60,7 +60,9 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define TILE_NAME_DY 6    /* name centred in the space below the tag */
 
 static nano_ui_callbacks_t s_cb;
+static lv_obj_t *s_scr;
 static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
+static lv_obj_t *s_update; /* built on first open: the keyboard and the network list cost heap the gig never needs */
 static lv_obj_t *s_tempo_big, *s_tempo_hint;
 static float s_tempo_bpm;
 static bool s_tempo_tapping;
@@ -115,6 +117,18 @@ static uint8_t s_brightness = 10;
 #define BRIGHTNESS_MIN 1
 #define BRIGHTNESS_MAX 10
 
+
+/* settings page 3 + update view */
+static char s_fw_version[32] = "unknown";
+static char s_wifi_ssid[33];
+static lv_obj_t *s_fw_value;
+static lv_obj_t *s_upd_main, *s_upd_version, *s_upd_wifi, *s_upd_text, *s_upd_sub, *s_upd_bar, *s_upd_action, *s_upd_close;
+static lv_obj_t *s_upd_nets, *s_upd_net_list, *s_upd_net_cancel;
+static lv_obj_t *s_upd_pass, *s_upd_pass_title, *s_upd_pass_ta, *s_upd_kb;
+static nano_update_state_t s_upd_state = NANO_UPDATE_BUSY;
+static nano_ui_network_t s_upd_networks[10];
+static int s_upd_network_count;
+static char s_upd_pick[33];  /* network whose password is being typed */
 
 static lv_obj_t *s_tuner_note, *s_tuner_cents, *s_tuner_bar, *s_tuner_verdict, *s_tuner_mute;
 static bool s_tuner_muted;
@@ -281,6 +295,7 @@ static void on_open_settings(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_SE
 static void on_open_tuner(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_TUNER); }
 static void on_back_to_menu(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_MENU); }
 static void on_open_tempo(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_TEMPO); }
+static void on_open_update(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_UPDATE); }
 static void on_tempo_step(lv_event_t *e)
 {
     int delta = (int)(intptr_t)lv_event_get_user_data(e);
@@ -631,20 +646,29 @@ void nano_ui_set_expression_values(const nano_exp_values_t *v)
 /* ---- menu / settings / tuner views --------------------------------------- */
 
 /* Full-screen view with a title bar: "<" back to the menu (when `back`), the title, "x" to the gig view. */
+static lv_obj_t *make_overlay_cb(lv_obj_t *scr, const char *title, lv_event_cb_t back_cb, lv_event_cb_t close_cb, lv_obj_t **close_out);
 static lv_obj_t *make_overlay(lv_obj_t *scr, const char *title, bool back)
 {
+    return make_overlay_cb(scr, title, back ? on_back_to_menu : NULL, on_close, NULL);
+}
+
+/* Same with the callbacks given: NULL back_cb = no back button. */
+static lv_obj_t *make_overlay_cb(lv_obj_t *scr, const char *title, lv_event_cb_t back_cb, lv_event_cb_t close_cb, lv_obj_t **close_out)
+{
+    bool back = back_cb != NULL;
     lv_obj_t *o = make_box(scr, 0, 0, SCREEN_W, SCREEN_H, C_BG);
     lv_obj_add_event_cb(o, on_pressed, LV_EVENT_PRESSED, NULL);
     if (back) {
-        lv_obj_t *b = make_button(o, 0, 0, 44, TOP_H + 4, LV_SYMBOL_LEFT, &lv_font_montserrat_14, C_BG, C_MUTED, on_back_to_menu, NULL);
+        lv_obj_t *b = make_button(o, 0, 0, 44, TOP_H + 4, LV_SYMBOL_LEFT, &lv_font_montserrat_14, C_BG, C_MUTED, back_cb, NULL);
         lv_obj_add_event_cb(b, on_pressed, LV_EVENT_PRESSED, NULL);
         lv_obj_set_ext_click_area(b, 6);
     }
     lv_obj_t *t = make_label(o, &lv_font_montserrat_14, C_MUTED);
     lv_label_set_text(t, title);
     lv_obj_set_pos(t, back ? 40 : 12, 8);
-    lv_obj_t *close = make_button(o, SCREEN_W - 44, 0, 44, TOP_H + 4, LV_SYMBOL_CLOSE, &lv_font_montserrat_14, C_BG, C_MUTED, on_close, NULL);
+    lv_obj_t *close = make_button(o, SCREEN_W - 44, 0, 44, TOP_H + 4, LV_SYMBOL_CLOSE, &lv_font_montserrat_14, C_BG, C_MUTED, close_cb, NULL);
     lv_obj_set_ext_click_area(close, 6);
+    if (close_out) *close_out = close;
     lv_obj_set_hidden(o, true);
     return o;
 }
@@ -756,6 +780,25 @@ static void build_settings(lv_obj_t *scr)
     setting_caption(page2, y, "Brightness");
     s_bright_value = setting_stepper(page2, y, on_brightness_step);
     set_brightness_text();
+
+    /* Page 3: firmware version and the way into the update view. */
+    lv_obj_t *page3 = pager_add_page(&s_settings_pager, s_settings, SETTING_X, top, SCREEN_W - SETTING_X, page_h);
+    y = 4;
+    setting_caption(page3, y, "Firmware");
+    s_fw_value = make_label(page3, &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_width(s_fw_value, 150);
+    lv_obj_set_style_text_align(s_fw_value, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_long_mode(s_fw_value, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(s_fw_value, SETTING_RIGHT - 150, y + (SETTING_ROW_H - lv_font_get_line_height(&lv_font_montserrat_14)) / 2);
+    lv_label_set_text(s_fw_value, s_fw_version);
+    y = 52;
+    lv_obj_t *upd = make_button(page3, 0, y, SETTING_RIGHT, 40, LV_SYMBOL_DOWNLOAD "  Check for updates", &lv_font_montserrat_14, C_PANEL, C_ACCENT, on_open_update, NULL);
+    lv_obj_add_event_cb(upd, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_t *hint = make_label(page3, &lv_font_montserrat_12, C_MUTED);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(hint, SETTING_RIGHT);
+    lv_obj_set_pos(hint, 0, y + 48);
+    lv_label_set_text(hint, "Joins Wi-Fi and turns Bluetooth off while it runs. The screen restarts when you close the update page.");
 
     pager_show(&s_settings_pager, 0);
 }
@@ -949,6 +992,7 @@ void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb)
 {
     s_cb = *cb;
     lv_obj_t *scr = lv_display_get_screen_active(disp);
+    s_scr = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_scrollable(scr, false);
@@ -963,9 +1007,15 @@ void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb)
     nano_ui_set_connected(false);
 }
 
+static void build_update(lv_obj_t *scr);
+
 static void show_view(nano_view_t view, bool notify)
 {
     if (view == s_view) return;
+    /* Only the user leaves the update view (it ends in a restart); late pedal events must not. */
+    if (s_view == NANO_VIEW_UPDATE && !notify) return;
+    if (view == NANO_VIEW_UPDATE && !s_update) build_update(s_scr);
+    if (s_view == NANO_VIEW_UPDATE && notify && s_cb.on_update_close) s_cb.on_update_close();
     if (s_view == NANO_VIEW_TUNER && notify && s_cb.on_tuner) s_cb.on_tuner(false);
     if (s_view == NANO_VIEW_TEMPO && notify && s_cb.on_tempo_view) s_cb.on_tempo_view(false);
     s_view = view;
@@ -974,12 +1024,14 @@ static void show_view(nano_view_t view, bool notify)
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
     lv_obj_set_hidden(s_tempo_view, view != NANO_VIEW_TEMPO);
     lv_obj_set_hidden(s_connect, view != NANO_VIEW_CONNECT);
+    if (s_update) lv_obj_set_hidden(s_update, view != NANO_VIEW_UPDATE);
     connect_dot_animate(view == NANO_VIEW_CONNECT && s_link_enabled);
     if (view == NANO_VIEW_TUNER) {
         nano_ui_set_tuner(NULL, 0, false);
         if (notify && s_cb.on_tuner) s_cb.on_tuner(true);
     }
     if (view == NANO_VIEW_TEMPO && notify && s_cb.on_tempo_view) s_cb.on_tempo_view(true);
+    if (view == NANO_VIEW_UPDATE && notify && s_cb.on_update_open) s_cb.on_update_open();
 }
 
 void nano_ui_open_tempo_from_pedal(void)
@@ -1255,4 +1307,322 @@ void nano_ui_set_tuner(const char *note, float cents, bool in_tune)
     snprintf(t, sizeof(t), "%+d ct", (int)(cents < 0 ? cents - 0.5f : cents + 0.5f));
     lv_label_set_text(s_tuner_cents, t);
     lv_label_set_text(s_tuner_verdict, in_tune ? "In tune" : cents < 0 ? "Flat" : "Sharp");
+}
+
+/* ---- firmware update view --------------------------------------------------- */
+
+#define UPD_X 12
+#define UPD_W (SCREEN_W - 2 * UPD_X)
+#define UPD_ROW_H 36
+#define UPD_PASS_TA_H 36
+#define UPD_KB_Y (TOP_H + 4 + 4 + UPD_PASS_TA_H + 22)
+
+typedef enum { UPD_PANEL_MAIN, UPD_PANEL_NETWORKS, UPD_PANEL_PASSWORD } upd_panel_t;
+
+static void upd_show_panel(upd_panel_t p)
+{
+    lv_obj_set_hidden(s_upd_main, p != UPD_PANEL_MAIN);
+    lv_obj_set_hidden(s_upd_nets, p != UPD_PANEL_NETWORKS);
+    lv_obj_set_hidden(s_upd_pass, p != UPD_PANEL_PASSWORD);
+}
+
+static void upd_refresh_wifi(void)
+{
+    lv_label_set_text(s_upd_wifi, s_wifi_ssid[0] ? s_wifi_ssid : "Not set up");
+    lv_obj_set_style_text_color(s_upd_wifi, lv_color_hex(s_wifi_ssid[0] ? C_TEXT : C_MUTED), 0);
+    lv_obj_set_hidden(s_upd_net_cancel, !s_wifi_ssid[0]);
+}
+
+static void upd_start_join(const char *ssid, const char *password)
+{
+    strncpy(s_wifi_ssid, ssid, sizeof(s_wifi_ssid) - 1);
+    s_wifi_ssid[sizeof(s_wifi_ssid) - 1] = '\0';
+    upd_refresh_wifi();
+    char t[64];
+    snprintf(t, sizeof(t), "Connecting to %s", ssid);
+    nano_ui_update_status(NANO_UPDATE_BUSY, t, 0);
+    upd_show_panel(UPD_PANEL_MAIN);
+    if (s_cb.on_wifi_join) s_cb.on_wifi_join(ssid, password);
+}
+
+static void on_upd_close(lv_event_t *e) { (void)e; nano_ui_show(s_base_view); }
+
+static void on_upd_change_wifi(lv_event_t *e)
+{
+    (void)e;
+    nano_ui_update_show_networks(NULL, 0, true);
+    if (s_cb.on_wifi_scan) s_cb.on_wifi_scan();
+}
+
+static void on_upd_cancel_networks(lv_event_t *e) { (void)e; upd_show_panel(UPD_PANEL_MAIN); }
+
+static void on_upd_action(lv_event_t *e)
+{
+    (void)e;
+    if (s_upd_state == NANO_UPDATE_AVAILABLE) {
+        nano_ui_update_status(NANO_UPDATE_DOWNLOADING, NULL, 0);
+        if (s_cb.on_update_install) s_cb.on_update_install();
+    } else if (s_upd_state == NANO_UPDATE_UP_TO_DATE || s_upd_state == NANO_UPDATE_ERROR) {
+        nano_ui_update_status(NANO_UPDATE_BUSY, "Checking for updates", 0);
+        if (s_cb.on_update_check) s_cb.on_update_check();
+    }
+}
+
+static void on_upd_network(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_upd_network_count) return;
+    const nano_ui_network_t *n = &s_upd_networks[i];
+    if (!n->secure) {
+        upd_start_join(n->ssid, "");
+        return;
+    }
+    strncpy(s_upd_pick, n->ssid, sizeof(s_upd_pick) - 1);
+    s_upd_pick[sizeof(s_upd_pick) - 1] = '\0';
+    char t[64];
+    snprintf(t, sizeof(t), "Password for %s", n->ssid);
+    lv_label_set_text(s_upd_pass_title, t);
+    lv_textarea_set_text(s_upd_pass_ta, "");
+    upd_show_panel(UPD_PANEL_PASSWORD);
+}
+
+static void on_upd_eye(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target_obj(e);
+    bool hidden = !lv_textarea_get_password_mode(s_upd_pass_ta);
+    lv_textarea_set_password_mode(s_upd_pass_ta, hidden);
+    lv_label_set_text(lv_obj_get_child(btn, 0), hidden ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
+}
+
+static void on_upd_keyboard(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY) {
+        const char *pw = lv_textarea_get_text(s_upd_pass_ta);
+        if (strlen(pw) < 8) return; /* WPA2 needs 8 or more: keep typing */
+        upd_start_join(s_upd_pick, pw);
+    } else if (code == LV_EVENT_CANCEL) {
+        upd_show_panel(UPD_PANEL_NETWORKS);
+    }
+}
+
+/* Four bars, lit by signal strength. */
+static void make_bars(lv_obj_t *parent, int32_t x, int32_t y, int8_t rssi)
+{
+    int lit = rssi > -55 ? 4 : rssi > -65 ? 3 : rssi > -75 ? 2 : 1;
+    for (int i = 0; i < 4; i++) {
+        int32_t h = 4 + i * 3;
+        lv_obj_t *b = make_box(parent, x + i * 5, y + 13 - h, 3, h, i < lit ? C_TEXT : C_DIM);
+        lv_obj_set_clickable(b, false);
+    }
+}
+
+static void build_update(lv_obj_t *scr)
+{
+    s_update = make_overlay_cb(scr, "Firmware update", NULL, on_upd_close, &s_upd_close);
+    const int32_t top = TOP_H + 4;
+
+    /* Main panel: installed version, Wi-Fi line, status, action. */
+    s_upd_main = make_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
+    lv_obj_t *l = make_label(s_upd_main, &lv_font_montserrat_12, C_MUTED);
+    lv_label_set_text(l, "Installed");
+    lv_obj_set_pos(l, UPD_X, 8);
+    s_upd_version = make_label(s_upd_main, &lv_font_montserrat_14, C_TEXT);
+    lv_obj_set_pos(s_upd_version, 76, 6);
+    lv_obj_set_width(s_upd_version, UPD_W - 64);
+    lv_label_set_long_mode(s_upd_version, LV_LABEL_LONG_DOT);
+    lv_label_set_text(s_upd_version, s_fw_version);
+    l = make_label(s_upd_main, &lv_font_montserrat_12, C_MUTED);
+    lv_label_set_text(l, "Wi-Fi");
+    lv_obj_set_pos(l, UPD_X, 38);
+    s_upd_wifi = make_label(s_upd_main, &lv_font_montserrat_14, C_TEXT);
+    lv_obj_set_pos(s_upd_wifi, 76, 36);
+    lv_obj_set_width(s_upd_wifi, UPD_W - 64 - 84);
+    lv_label_set_long_mode(s_upd_wifi, LV_LABEL_LONG_DOT);
+    lv_obj_t *change = make_button(s_upd_main, SCREEN_W - UPD_X - 76, 30, 76, 28, "Change", &lv_font_montserrat_12, C_PANEL, C_ACCENT, on_upd_change_wifi, NULL);
+    lv_obj_set_style_radius(change, 7, 0);
+    lv_obj_add_event_cb(change, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_set_ext_click_area(change, 6);
+    make_box(s_upd_main, UPD_X, 66, UPD_W, 1, C_PANEL_2);
+
+    s_upd_text = make_label(s_upd_main, &lv_font_montserrat_20, C_TEXT);
+    lv_obj_set_width(s_upd_text, UPD_W);
+    lv_obj_set_pos(s_upd_text, UPD_X, 78);
+    lv_obj_set_style_text_align(s_upd_text, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_upd_text, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(s_upd_text, lv_font_get_line_height(&lv_font_montserrat_20));
+    s_upd_sub = make_label(s_upd_main, &lv_font_montserrat_12, C_MUTED);
+    lv_obj_set_width(s_upd_sub, UPD_W);
+    lv_obj_set_pos(s_upd_sub, UPD_X, 106);
+    lv_obj_set_style_text_align(s_upd_sub, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_upd_sub, LV_LABEL_LONG_WRAP);
+    s_upd_bar = lv_bar_create(s_upd_main);
+    lv_obj_set_pos(s_upd_bar, UPD_X + 12, 136);
+    lv_obj_set_size(s_upd_bar, UPD_W - 24, 10);
+    lv_bar_set_range(s_upd_bar, 0, 100);
+    lv_obj_set_style_bg_color(s_upd_bar, lv_color_hex(C_PANEL_2), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_upd_bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_upd_bar, lv_color_hex(C_ON), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_upd_bar, 5, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_upd_bar, 5, LV_PART_INDICATOR);
+    s_upd_action = make_button(s_upd_main, UPD_X, SCREEN_H - top - 54, UPD_W, 44, "", &lv_font_montserrat_20, C_ACCENT, C_FX_TEXT, on_upd_action, NULL);
+    lv_obj_add_event_cb(s_upd_action, on_pressed, LV_EVENT_PRESSED, NULL);
+
+    /* Network picker. */
+    s_upd_nets = make_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
+    l = make_label(s_upd_nets, &lv_font_montserrat_14, C_TEXT);
+    lv_label_set_text(l, "Choose Wi-Fi");
+    lv_obj_set_pos(l, UPD_X, 8);
+    lv_obj_t *rescan = make_button(s_upd_nets, SCREEN_W - UPD_X - 76, 2, 76, 28, LV_SYMBOL_REFRESH " Scan", &lv_font_montserrat_12, C_PANEL, C_ACCENT, on_upd_change_wifi, NULL);
+    lv_obj_set_style_radius(rescan, 7, 0);
+    lv_obj_add_event_cb(rescan, on_pressed, LV_EVENT_PRESSED, NULL);
+    s_upd_net_cancel = make_button(s_upd_nets, SCREEN_W - UPD_X - 76 - 6 - 70, 2, 70, 28, "Cancel", &lv_font_montserrat_12, C_PANEL, C_MUTED, on_upd_cancel_networks, NULL);
+    lv_obj_set_style_radius(s_upd_net_cancel, 7, 0);
+    lv_obj_add_event_cb(s_upd_net_cancel, on_pressed, LV_EVENT_PRESSED, NULL);
+    s_upd_net_list = make_box(s_upd_nets, UPD_X, 36, UPD_W, SCREEN_H - top - 40, C_BG);
+    lv_obj_set_scrollable(s_upd_net_list, true);
+    lv_obj_set_scroll_dir(s_upd_net_list, LV_DIR_VER);
+    lv_obj_set_flex_flow(s_upd_net_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_upd_net_list, 4, 0);
+
+    /* Password: field + show/hide, keyboard under it (OK joins, the keyboard key goes back). */
+    s_upd_pass = make_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
+    s_upd_pass_title = make_label(s_upd_pass, &lv_font_montserrat_12, C_MUTED);
+    lv_obj_set_pos(s_upd_pass_title, UPD_X, 2);
+    lv_obj_set_width(s_upd_pass_title, UPD_W);
+    lv_label_set_long_mode(s_upd_pass_title, LV_LABEL_LONG_DOT);
+    s_upd_pass_ta = lv_textarea_create(s_upd_pass);
+    lv_obj_set_pos(s_upd_pass_ta, UPD_X, 20);
+    lv_obj_set_size(s_upd_pass_ta, UPD_W - 48, UPD_PASS_TA_H);
+    lv_textarea_set_one_line(s_upd_pass_ta, true);
+    lv_textarea_set_password_mode(s_upd_pass_ta, true);
+    lv_textarea_set_max_length(s_upd_pass_ta, 63);
+    lv_textarea_set_placeholder_text(s_upd_pass_ta, "8 characters or more");
+    lv_obj_set_style_bg_color(s_upd_pass_ta, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_border_color(s_upd_pass_ta, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_text_color(s_upd_pass_ta, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_text_font(s_upd_pass_ta, &lv_font_montserrat_14, 0);
+    lv_obj_t *eye = make_button(s_upd_pass, SCREEN_W - UPD_X - 42, 20, 42, UPD_PASS_TA_H, LV_SYMBOL_EYE_OPEN, &lv_font_montserrat_14, C_PANEL, C_MUTED, on_upd_eye, NULL);
+    lv_obj_set_style_radius(eye, 7, 0);
+    s_upd_kb = lv_keyboard_create(s_upd_pass);
+    lv_obj_set_size(s_upd_kb, SCREEN_W, SCREEN_H - UPD_KB_Y);
+    lv_obj_align(s_upd_kb, LV_ALIGN_BOTTOM_MID, 0, 0); /* the keyboard is bottom-aligned by default: pos would be an offset */
+    lv_keyboard_set_textarea(s_upd_kb, s_upd_pass_ta);
+    lv_obj_set_style_bg_color(s_upd_kb, lv_color_hex(C_BG), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_upd_kb, 2, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(s_upd_kb, 3, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_upd_kb, lv_color_hex(C_PANEL_2), LV_PART_ITEMS);
+    lv_obj_set_style_text_color(s_upd_kb, lv_color_hex(C_TEXT), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(s_upd_kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_shadow_width(s_upd_kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_radius(s_upd_kb, 5, LV_PART_ITEMS);
+    lv_obj_add_event_cb(s_upd_kb, on_upd_keyboard, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(s_upd_kb, on_upd_keyboard, LV_EVENT_CANCEL, NULL);
+
+    upd_refresh_wifi();
+    nano_ui_update_status(NANO_UPDATE_BUSY, "Starting Wi-Fi", 0);
+    upd_show_panel(UPD_PANEL_MAIN);
+}
+
+void nano_ui_set_firmware_version(const char *version)
+{
+    strncpy(s_fw_version, version && version[0] ? version : "unknown", sizeof(s_fw_version) - 1);
+    s_fw_version[sizeof(s_fw_version) - 1] = '\0';
+    if (s_fw_value) lv_label_set_text(s_fw_value, s_fw_version);
+    if (s_upd_version) lv_label_set_text(s_upd_version, s_fw_version);
+}
+
+void nano_ui_update_set_wifi(const char *ssid)
+{
+    strncpy(s_wifi_ssid, ssid ? ssid : "", sizeof(s_wifi_ssid) - 1);
+    s_wifi_ssid[sizeof(s_wifi_ssid) - 1] = '\0';
+    if (s_update) upd_refresh_wifi();
+}
+
+void nano_ui_update_status(nano_update_state_t state, const char *text, int percent)
+{
+    if (!s_update) return;
+    s_upd_state = state;
+    char t[64] = "", sub[96] = "";
+    const char *action = NULL;
+    uint32_t color = C_TEXT;
+    switch (state) {
+    case NANO_UPDATE_BUSY:
+        snprintf(t, sizeof(t), "%s", text && text[0] ? text : "Working");
+        snprintf(sub, sizeof(sub), "Bluetooth is off until you close this page");
+        color = C_MUTED;
+        break;
+    case NANO_UPDATE_UP_TO_DATE:
+        snprintf(t, sizeof(t), LV_SYMBOL_OK " Up to date");
+        snprintf(sub, sizeof(sub), "Latest release: %s", text ? text : "");
+        color = C_ON;
+        action = "Check again";
+        break;
+    case NANO_UPDATE_AVAILABLE:
+        snprintf(t, sizeof(t), "Update available");
+        snprintf(sub, sizeof(sub), "Version %s", text ? text : "");
+        color = C_ACCENT;
+        action = LV_SYMBOL_DOWNLOAD "  Install";
+        break;
+    case NANO_UPDATE_DOWNLOADING:
+        snprintf(t, sizeof(t), "Installing  %d%%", percent);
+        snprintf(sub, sizeof(sub), "Keep the screen powered");
+        break;
+    case NANO_UPDATE_DONE:
+        snprintf(t, sizeof(t), LV_SYMBOL_OK " Installed");
+        snprintf(sub, sizeof(sub), "Restarting");
+        color = C_ON;
+        break;
+    case NANO_UPDATE_ERROR:
+        snprintf(t, sizeof(t), "%s", text && text[0] ? text : "Something went wrong");
+        snprintf(sub, sizeof(sub), "Check the Wi-Fi network, then try again");
+        color = C_ERROR;
+        action = "Try again";
+        break;
+    }
+    lv_label_set_text(s_upd_text, t);
+    lv_obj_set_style_text_color(s_upd_text, lv_color_hex(color), 0);
+    lv_label_set_text(s_upd_sub, sub);
+    lv_obj_set_hidden(s_upd_bar, state != NANO_UPDATE_DOWNLOADING && state != NANO_UPDATE_DONE);
+    lv_bar_set_value(s_upd_bar, state == NANO_UPDATE_DONE ? 100 : percent, LV_ANIM_OFF);
+    lv_obj_set_hidden(s_upd_action, action == NULL);
+    if (action) {
+        lv_obj_t *al = lv_obj_get_child(s_upd_action, 0);
+        lv_label_set_text(al, action);
+        lv_obj_center(al);
+    }
+    /* Closing restarts the screen: not while the new image is being written or activated. */
+    lv_obj_set_hidden(s_upd_close, state == NANO_UPDATE_DOWNLOADING || state == NANO_UPDATE_DONE);
+    upd_show_panel(UPD_PANEL_MAIN);
+}
+
+void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, bool scanning)
+{
+    if (!s_update) return;
+    if (count > (int)(sizeof(s_upd_networks) / sizeof(s_upd_networks[0]))) count = (int)(sizeof(s_upd_networks) / sizeof(s_upd_networks[0]));
+    s_upd_network_count = scanning || !networks ? 0 : count;
+    if (s_upd_network_count) memcpy(s_upd_networks, networks, sizeof(*networks) * (size_t)s_upd_network_count);
+    lv_obj_clean(s_upd_net_list);
+    if (!s_upd_network_count) {
+        lv_obj_t *l = make_label(s_upd_net_list, &lv_font_montserrat_14, C_MUTED);
+        lv_label_set_text(l, scanning ? "Searching for networks" : "No networks found");
+    }
+    for (int i = 0; i < s_upd_network_count; i++) {
+        const nano_ui_network_t *n = &s_upd_networks[i];
+        lv_obj_t *row = make_button(s_upd_net_list, 0, 0, UPD_W, UPD_ROW_H, "", &lv_font_montserrat_14, C_PANEL, C_TEXT, on_upd_network, (void *)(intptr_t)i);
+        lv_obj_set_style_radius(row, 8, 0);
+        lv_obj_add_event_cb(row, on_pressed, LV_EVENT_PRESSED, NULL);
+        lv_obj_t *name = lv_obj_get_child(row, 0);
+        lv_label_set_text(name, n->ssid);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_obj_set_size(name, UPD_W - 70, lv_font_get_line_height(&lv_font_montserrat_14)); /* one line: LONG_DOT needs a fixed height */
+        lv_obj_align(name, LV_ALIGN_LEFT_MID, 10, 0);
+        if (n->secure) {
+            lv_obj_t *lock = make_label(row, &montserrat_medium_10, C_MUTED);
+            lv_label_set_text(lock, "WPA");
+            lv_obj_align(lock, LV_ALIGN_RIGHT_MID, -32, 0);
+        }
+        make_bars(row, UPD_W - 28, (UPD_ROW_H - 13) / 2, n->rssi);
+    }
+    upd_show_panel(UPD_PANEL_NETWORKS);
 }

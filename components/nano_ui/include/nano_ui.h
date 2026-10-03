@@ -29,7 +29,24 @@ typedef enum {
     NANO_VIEW_TUNER,
     NANO_VIEW_TEMPO,
     NANO_VIEW_CONNECT,     /* no live state: "put the pedal in connect mode" / Connect button */
+    NANO_VIEW_UPDATE,      /* firmware update over Wi-Fi (Bluetooth is off while it shows; closing restarts) */
 } nano_view_t;
+
+/* What the firmware update view shows under the Wi-Fi line. */
+typedef enum {
+    NANO_UPDATE_BUSY = 0,     /* text = what is happening ("Connecting to ...", "Checking ...") */
+    NANO_UPDATE_UP_TO_DATE,   /* text = the published version */
+    NANO_UPDATE_AVAILABLE,    /* text = the new version: an Install button */
+    NANO_UPDATE_DOWNLOADING,  /* percent */
+    NANO_UPDATE_DONE,         /* installed, restarting */
+    NANO_UPDATE_ERROR,        /* text = what went wrong: a Try again button */
+} nano_update_state_t;
+
+typedef struct {
+    char ssid[33];
+    int8_t rssi;
+    bool secure;
+} nano_ui_network_t;
 
 typedef struct {
     void (*on_prev_preset)(void);
@@ -60,6 +77,16 @@ typedef struct {
     void (*on_tempo_delta)(int delta);
     /* Tempo view opened (true) / closed (false) from the screen: the app puts the pedal in / out of tap tempo mode. */
     void (*on_tempo_view)(bool open);
+    /* Settings "Check for updates": the app shuts Bluetooth down, starts Wi-Fi and checks. */
+    void (*on_update_open)(void);
+    /* The update view was closed: the app restarts (Bluetooth cannot come back without one). */
+    void (*on_update_close)(void);
+    /* Update view: list the Wi-Fi networks in range (answered with nano_ui_update_set_networks). */
+    void (*on_wifi_scan)(void);
+    /* A network was picked (password "" for an open one): join it, remember it, check. */
+    void (*on_wifi_join)(const char *ssid, const char *password);
+    void (*on_update_check)(void);
+    void (*on_update_install)(void);
 } nano_ui_callbacks_t;
 
 void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb);
@@ -117,6 +144,13 @@ void nano_ui_set_expression_assignments(const nano_exp_assignments_t *a);
 void nano_ui_set_expression_values(const nano_exp_values_t *v);
 /* Mute state as the pedal reports it (tuner report field 7). */
 void nano_ui_set_tuner_mute(bool muted);
+/* Running firmware version (settings page 3 and the update view). */
+void nano_ui_set_firmware_version(const char *version);
+/* Update view: the remembered / joined Wi-Fi network (NULL or "" = none yet). */
+void nano_ui_update_set_wifi(const char *ssid);
+void nano_ui_update_status(nano_update_state_t state, const char *text, int percent);
+/* Update view: show the network picker ("Searching" while `scanning`, else the list). */
+void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, bool scanning);
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,53 @@
+# Push a tag like v0.4.0 -> build the firmware with that version -> publish nanogig_screen.bin as a
+# release of the PUBLIC repo johnnyborjomi/NanoGigScreen-firmware. The screens download
+# https://github.com/johnnyborjomi/NanoGigScreen-firmware/releases/latest/download/nanogig_screen.bin
+# (CONFIG_NANOGIG_OTA_URL), so this source repo can stay private.
+#
+# Needs the secret FIRMWARE_REPO_TOKEN: a fine-grained token with "Contents: read and write" on
+# NanoGigScreen-firmware only.
+name: Release firmware
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.3.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        env:
+          NANOGIG_VERSION: ${{ github.ref_name }}   # PROJECT_VER: what the screen shows and compares
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py build
+          python -c "import sys; d=open('build/nanogig_screen.bin','rb').read(); sys.exit(0 if b'${{ github.ref_name }}' in d[:512] else 'version not stamped into the image')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            build/nanogig_screen.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/ota_data_initial.bin
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+      - name: Release on NanoGigScreen-firmware
+        env:
+          GH_TOKEN: ${{ secrets.FIRMWARE_REPO_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" nanogig_screen.bin \
+            --repo johnnyborjomi/NanoGigScreen-firmware \
+            --title "NanoGig Screen $TAG" \
+            --notes "Install from the screen: Menu > Settings > page 3 > Check for updates."
