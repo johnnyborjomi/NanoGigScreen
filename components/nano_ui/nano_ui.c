@@ -55,8 +55,8 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 #define GATE_H 26
 #define TILE_Y 164
 #define TILE_W 60
-#define TILE_H 72
-#define TILE_TAG_Y 3      /* category tag: just under the top border, same spot on and off */
+#define TILE_H 74
+#define TILE_TAG_Y 1      /* category tag: right under the top border, same spot on and off */
 #define TILE_NAME_DY 6    /* name centred in the space below the tag */
 
 static nano_ui_callbacks_t s_cb;
