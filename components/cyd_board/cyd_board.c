@@ -43,7 +43,9 @@ static const char *TAG = "cyd_board";
 #define LCD_HOST SPI2_HOST
 #define TOUCH_HOST SPI3_HOST
 #define LCD_PIXEL_CLOCK_HZ (40 * 1000 * 1000)
-#define LVGL_BUFFER_LINES 40
+/* Two DMA buffers of this many lines (2 x 15 KB): 24, not 40, since Wi-Fi joined the image (its ~23 KB of
+ * static RAM comes out of the heap the gig needs; 40 lines left ~9.6 KB free after boot). */
+#define LVGL_BUFFER_LINES 24
 
 /* Backlight PWM: the CYD's LED driver takes a plain GPIO; 5 kHz keeps it out of hearing and off camera. */
 #define BL_TIMER LEDC_TIMER_0

@@ -13,7 +13,8 @@ and shows, with no phone on the floor:
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
 - menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),
   settings (presets per bank and label style, outputs 1/2 mute, expression indicators; page 2:
-  display rotation 0° / 180° and brightness 1–10, both remembered), a tempo view (big BPM, − / + set the pedal's tempo,
+  display rotation 0° / 180° and brightness 1–10, both remembered; page 3: firmware version and
+  updates over Wi-Fi), a tempo view (big BPM, − / + set the pedal's tempo,
   follows the pedal's tap tempo live), and Disconnect / Connect so Cortex Cloud can take the
   pedal without powering the screen off. A tuner started on the pedal opens the view too.
 
@@ -39,6 +40,7 @@ components/
                          state / metadata / event decoders, FX model catalogue, category palette
     test/                host tests with hardware fixtures (cc + CMake)
   nano_ble/              NimBLE central: scan → connect → MTU 517 → a002 → subscribe c305 → write c304
+  nano_ota/              update mode: Wi-Fi join (NVS credentials), HTTPS image check + install, rollback
   cyd_board/             ESP32-2432S028 bring-up: SPI panel, XPT2046 touch, backlight, LED, LVGL port
   nano_ui/               LVGL 9 gig screen
 docs/HARDWARE.md         board facts, pinout, mounting notes
@@ -61,7 +63,8 @@ with Ctrl-]. On another machine: install ESP-IDF 5.2 or newer, `idf.py set-targe
 the same build and flash commands without the wrapper.
 
 `sdkconfig.defaults` carries the required settings: NimBLE central only, preferred MTU 517
-with a larger mbuf pool, custom partition table (3.9 MB app), LVGL 16-bit colour with the
+with a larger mbuf pool, custom partition table (two 1.94 MB OTA slots), Wi-Fi + HTTPS for
+updates (Wi-Fi fast paths out of IRAM: Bluetooth fills it), LVGL 16-bit colour with the
 Montserrat 12/14/20/28/40 fonts. `idf.py menuconfig → NanoGig Screen board` selects the panel
 controller (ILI9341 vs ST7789 on some two-USB batches), colour inversion, 180° rotation and
 touch mirroring.
@@ -86,6 +89,39 @@ open out
 cd components/nano_protocol/test
 cmake -B build && cmake --build build && ./build/test_protocol
 ```
+
+## Firmware updates over Wi-Fi
+
+Menu → Settings → page 3 → **Check for updates**. The screen drops the pedal link, shuts
+Bluetooth down (no PSRAM: the heap cannot hold Bluetooth, Wi-Fi and TLS at once), starts Wi-Fi
+and joins the remembered network, or lists the networks in range and asks for the password
+(kept in NVS, namespace `nanogig_wifi`, unencrypted). It then reads only the header of
+`CONFIG_NANOGIG_OTA_URL` (menuconfig → NanoGig Screen firmware update):
+
+    https://github.com/johnnyborjomi/NanoGigScreen-firmware/releases/latest/download/nanogig_screen.bin
+
+If the image's version differs from the running one, **Install** downloads it into the other
+OTA slot and restarts. Closing the update page restarts too, which brings Bluetooth back. The
+bootloader keeps the previous image until the new one reaches the end of `app_main` (display,
+touch and Bluetooth up), so an image that crashes on boot rolls back by itself.
+
+**Releasing.** This repo is private, so `.github/workflows/release.yml` builds every `v*` tag
+with `NANOGIG_VERSION=<tag>` (the version the screen shows and compares) and publishes only
+`nanogig_screen.bin` as a release of the public repo `johnnyborjomi/NanoGigScreen-firmware`
+(secret `FIRMWARE_REPO_TOKEN`: a fine-grained token with Contents read/write on that repo).
+
+```sh
+git tag v0.4.0 && git push origin v0.4.0
+```
+
+Local builds report `git describe` as their version, so a development build always offers the
+newest release.
+
+**First switch to OTA.** The partition table changed from one factory app to two OTA slots, and
+the bootloader gained rollback, so the first flash after this change must go over USB with
+`idf.py flash` (bootloader, partition table, OTA data and app). The `nvs` partition stays where
+it was, so settings and the preset cache survive. Delete a local `sdkconfig` first, or new
+defaults such as rollback stay off: `rm sdkconfig && idf.py build`.
 
 ## How it syncs
 

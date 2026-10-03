@@ -10,6 +10,11 @@
  *   0x1F / 0x1A / 0x1C / 0x73 -> debounced state re-read (400 ms).
  *   tap left / right edge of the name -> c304 preset select, confirmed by the
  *   state dump's field 13.
+ *
+ * Firmware update (Settings page 3): Bluetooth shuts down, Wi-Fi starts, the
+ * screen fetches CONFIG_NANOGIG_OTA_URL into the other OTA slot; closing the
+ * page restarts. A new image that never reaches the end of app_main is rolled
+ * back by the bootloader.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +23,7 @@
 #include "cyd_board.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -26,6 +32,7 @@
 #include "nano_ble.h"
 #include "nano_decode.h"
 #include "nano_frame.h"
+#include "nano_ota.h"
 #include "nano_proto.h"
 #include "nano_ui.h"
 #include "nvs.h"
@@ -55,7 +62,7 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
@@ -262,6 +269,87 @@ static void ui_on_outputs_mute(bool mute) { app_msg_t m = { .kind = MSG_OUTPUTS_
 static void ui_on_expression_show(bool show) { app_msg_t m = { .kind = MSG_EXP_SHOW, .flag = show }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_rotation(bool rot) { app_msg_t m = { .kind = MSG_ROTATE, .flag = rot }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_brightness(uint8_t v) { app_msg_t m = { .kind = MSG_BRIGHTNESS, .value = v }; xQueueSend(s_queue, &m, 0); }
+/* Update mode: opening shuts Bluetooth down (blocking, so on the app task); the rest goes straight to the update task. */
+static void ui_on_update_open(void) { app_msg_t m = { .kind = MSG_UPDATE_OPEN }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_update_close(void) { app_msg_t m = { .kind = MSG_UPDATE_CLOSE }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_wifi_scan(void) { nano_ota_scan(); }
+static void ui_on_wifi_join(const char *ssid, const char *pass) { nano_ota_join(ssid, pass); }
+static void ui_on_update_check(void) { nano_ota_check(); }
+static void ui_on_update_install(void) { nano_ota_install(); }
+
+/* ---- firmware update ---------------------------------------------------------- */
+
+static bool s_update_mode;
+
+/* Update task -> update view. */
+static void ota_on_event(const nano_ota_event_t *ev)
+{
+    if (!lvgl_port_lock(200)) return;
+    switch (ev->kind) {
+    case NANO_OTA_EV_SCANNING:
+        nano_ui_update_show_networks(NULL, 0, true);
+        break;
+    case NANO_OTA_EV_SCAN_DONE: {
+        nano_ui_network_t nets[NANO_OTA_MAX_NETWORKS];
+        int n = ev->network_count < NANO_OTA_MAX_NETWORKS ? ev->network_count : NANO_OTA_MAX_NETWORKS;
+        for (int i = 0; i < n; i++) {
+            strlcpy(nets[i].ssid, ev->networks[i].ssid, sizeof(nets[i].ssid));
+            nets[i].rssi = ev->networks[i].rssi;
+            nets[i].secure = ev->networks[i].secure;
+        }
+        nano_ui_update_show_networks(nets, n, false);
+        break;
+    }
+    case NANO_OTA_EV_NO_WIFI:
+        nano_ui_update_show_networks(NULL, 0, true);
+        nano_ota_scan();
+        break;
+    case NANO_OTA_EV_CONNECTING: {
+        char t[64];
+        snprintf(t, sizeof(t), "Connecting to %s", ev->text);
+        nano_ui_update_status(NANO_UPDATE_BUSY, t, 0);
+        break;
+    }
+    case NANO_OTA_EV_WIFI_SAVED:
+        nano_ui_update_set_wifi(ev->text);
+        break;
+    case NANO_OTA_EV_CHECKING:
+        nano_ui_update_status(NANO_UPDATE_BUSY, "Checking for updates", 0);
+        break;
+    case NANO_OTA_EV_UP_TO_DATE:
+        nano_ui_update_status(NANO_UPDATE_UP_TO_DATE, ev->text, 0);
+        break;
+    case NANO_OTA_EV_AVAILABLE:
+        nano_ui_update_status(NANO_UPDATE_AVAILABLE, ev->text, 0);
+        break;
+    case NANO_OTA_EV_PROGRESS:
+        nano_ui_update_status(NANO_UPDATE_DOWNLOADING, NULL, ev->percent);
+        break;
+    case NANO_OTA_EV_INSTALLED:
+        nano_ui_update_status(NANO_UPDATE_DONE, ev->text, 100);
+        break;
+    case NANO_OTA_EV_ERROR:
+        nano_ui_update_status(NANO_UPDATE_ERROR, ev->text, 0);
+        break;
+    }
+    lvgl_port_unlock();
+}
+
+static void enter_update_mode(void)
+{
+    if (s_update_mode) return;
+    s_update_mode = true;
+    ESP_LOGI(TAG, "update mode: Bluetooth off, Wi-Fi on");
+    nano_ble_shutdown();
+    if (nano_ota_start(ota_on_event) != 0) {
+        if (lvgl_port_lock(100)) {
+            nano_ui_update_status(NANO_UPDATE_ERROR, "Wi-Fi failed to start", 0);
+            lvgl_port_unlock();
+        }
+        return;
+    }
+    nano_ota_check(); /* asks for a network first when none is remembered */
+}
 
 /* ---- requests ------------------------------------------------------------- */
 
@@ -832,6 +920,7 @@ static void on_status(nano_ble_status_t status, const char *detail)
     bool ready = status == NANO_BLE_READY;
     if (ready && !s_link_ready) {
         s_link_ready = true;
+        ESP_LOGI(TAG, "link ready, free heap %u B (lowest %u B)", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
         s_meta_requested_this_link = false;
         s_req_head = s_req_count = 0;
         s_select_inflight = false;
@@ -949,6 +1038,13 @@ static void app_task(void *arg)
                 cyd_backlight_set_level(m.value); /* instant; the value label already shows it */
                 nvs_save_u8(NVS_KEY_BRIGHTNESS, m.value);
                 break;
+            case MSG_UPDATE_OPEN:
+                enter_update_mode();
+                break;
+            case MSG_UPDATE_CLOSE:
+                ESP_LOGI(TAG, "update page closed: restarting");
+                esp_restart();
+                break;
             case MSG_BANK_SIZE:
                 bank_save(m.value);
                 if (lvgl_port_lock(50)) {
@@ -1001,6 +1097,8 @@ void app_main(void)
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute, .on_expression_show = ui_on_expression_show,
         .on_rotation = ui_on_rotation, .on_brightness = ui_on_brightness,
+        .on_update_open = ui_on_update_open, .on_update_close = ui_on_update_close, .on_wifi_scan = ui_on_wifi_scan,
+        .on_wifi_join = ui_on_wifi_join, .on_update_check = ui_on_update_check, .on_update_install = ui_on_update_install,
     };
     if (lvgl_port_lock(0)) {
         cyd_display_set_rotation(rot180); /* under the lock: the LVGL task already owns the panel bus */
@@ -1011,6 +1109,9 @@ void app_main(void)
         nano_ui_set_expression_show(s_exp_show);
         nano_ui_set_rotation(rot180);
         nano_ui_set_brightness(brightness);
+        nano_ui_set_firmware_version(nano_ota_running_version());
+        char ssid[33];
+        nano_ui_update_set_wifi(nano_ota_saved_ssid(ssid, sizeof(ssid)) ? ssid : NULL);
         nano_ui_set_status("Starting Bluetooth", false);
         nano_ui_set_stale(true);
         nano_ui_set_connected(false);
@@ -1022,7 +1123,7 @@ void app_main(void)
     s_queue = xQueueCreate(PACKET_QUEUE_LEN, sizeof(app_msg_t));
     s_asm_buf = malloc(ASSEMBLER_CAP);
     s_meta_scratch = malloc(sizeof(*s_meta_scratch));
-    if (!s_queue || !s_asm_buf || !s_meta_scratch) {
+    if (!s_queue || !s_asm_buf || !s_meta_scratch || nano_ota_init() != 0) {
         ESP_LOGE(TAG, "out of memory at start");
         return;
     }
@@ -1036,4 +1137,7 @@ void app_main(void)
             lvgl_port_unlock();
         }
     }
+    /* Display, touch and Bluetooth came up: a freshly installed image is good (else the bootloader rolls back). */
+    nano_ota_mark_valid();
+    ESP_LOGI(TAG, "firmware %s, free heap %u B", nano_ota_running_version(), (unsigned)esp_get_free_heap_size());
 }

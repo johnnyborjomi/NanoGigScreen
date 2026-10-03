@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "esp_bt.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -345,4 +346,17 @@ int nano_ble_write(const uint8_t *data, size_t len)
     int rc = ble_gattc_write_flat(s_conn_handle, s_c304_handle, data, (uint16_t)len, NULL, NULL);
     if (rc) ESP_LOGW(TAG, "c304 write rc=%d", rc);
     return rc;
+}
+
+void nano_ble_shutdown(void)
+{
+    nano_ble_set_enabled(false);
+    /* Let the pedal see a clean disconnect before the host goes away. */
+    for (int i = 0; i < 20 && s_conn_handle != BLE_HS_CONN_HANDLE_NONE; i++) vTaskDelay(pdMS_TO_TICKS(50));
+    int rc = nimble_port_stop(); /* nimble_port_run returns; the host task deletes itself */
+    if (rc) ESP_LOGW(TAG, "nimble_port_stop rc=%d", rc);
+    nimble_port_deinit(); /* host + controller */
+    esp_err_t err = esp_bt_mem_release(ESP_BT_MODE_BTDM);
+    ESP_LOGI(TAG, "Bluetooth shut down (mem release %s)", esp_err_to_name(err));
+    s_status = NANO_BLE_IDLE;
 }

@@ -1,0 +1,13 @@
+menu "NanoGig Screen firmware update"
+
+    config NANOGIG_OTA_URL
+        string "Firmware download URL"
+        default "https://github.com/johnnyborjomi/NanoGigScreen-firmware/releases/latest/download/nanogig_screen.bin"
+        help
+            HTTPS URL of the newest app image. GitHub's "releases/latest/download/<asset>"
+            redirects to the newest release's asset, so the URL never changes. The
+            screen reads the image header first and only installs when its version
+            differs from the running one. The source repo is private, so CI publishes
+            the binary to a separate public repo (.github/workflows/release.yml).
+
+endmenu

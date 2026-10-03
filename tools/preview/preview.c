@@ -230,6 +230,46 @@ int main(int argc, char **argv)
     render(200);
     save(dir, "8b-tempo");
 
+    /* 10. firmware: settings page 3, then the update view in each state */
+    nano_ui_set_firmware_version("v0.3.0");
+    nano_ui_update_set_wifi("Studio 5G");
+    nano_ui_show(NANO_VIEW_SETTINGS);
+    nano_ui_settings_page(2);
+    render(200);
+    save(dir, "10-settings-firmware");
+    nano_ui_settings_page(0);
+    nano_ui_show(NANO_VIEW_UPDATE);
+    nano_ui_update_status(NANO_UPDATE_BUSY, "Connecting to Studio 5G", 0);
+    render(200);
+    save(dir, "10a-update-connecting");
+    nano_ui_update_status(NANO_UPDATE_AVAILABLE, "v0.4.0", 0);
+    render(200);
+    save(dir, "10b-update-available");
+    nano_ui_update_status(NANO_UPDATE_DOWNLOADING, NULL, 42);
+    render(200);
+    save(dir, "10c-update-downloading");
+    nano_ui_update_status(NANO_UPDATE_UP_TO_DATE, "v0.3.0", 0);
+    render(200);
+    save(dir, "10d-update-up-to-date");
+    nano_ui_update_status(NANO_UPDATE_ERROR, "Wrong Wi-Fi password?", 0);
+    render(200);
+    save(dir, "10e-update-error");
+    {
+        nano_ui_network_t nets[] = {
+            { "Studio 5G", -48, true }, { "Venue Guest", -61, false }, { "Neighbours Wi-Fi With A Long Name", -70, true },
+            { "iPhone", -79, true }, { "PrinterSetup", -86, false },
+        };
+        nano_ui_update_show_networks(nets, 5, false);
+        render(200);
+        save(dir, "10f-update-networks");
+        /* tap the first (secured) network: the password page with its keyboard */
+        lv_obj_t *update = lv_obj_get_child(lv_screen_active(), -1);
+        lv_obj_t *list = lv_obj_get_child(lv_obj_get_child(update, -2), -1);
+        lv_obj_send_event(lv_obj_get_child(list, 0), LV_EVENT_CLICKED, NULL);
+        render(200);
+        save(dir, "10g-update-password");
+    }
+
     /* 9. medium name, 8 per bank */
     nano_ui_show(NANO_VIEW_MAIN);
     nano_ui_set_stale(false);

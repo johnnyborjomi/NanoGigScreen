@@ -43,6 +43,12 @@ void nano_ble_set_enabled(bool enabled);
 bool nano_ble_enabled(void);
 /* Negotiated ATT MTU (0 until connected). */
 uint16_t nano_ble_mtu(void);
+/*
+ * Firmware update mode: drop the link, stop the host, deinit the controller and hand its memory
+ * to the heap (Wi-Fi + TLS need it). One way: Bluetooth comes back only after a restart. Blocks for
+ * up to ~1 s; call from an app task, never from a NimBLE callback.
+ */
+void nano_ble_shutdown(void);
 
 #ifdef __cplusplus
 }
