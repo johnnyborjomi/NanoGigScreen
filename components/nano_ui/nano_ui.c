@@ -62,7 +62,7 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 static nano_ui_callbacks_t s_cb;
 static lv_obj_t *s_scr;
 static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
-static lv_obj_t *s_presets;
+static lv_obj_t *s_presets; /* built on open, freed on close: ~10 KB of heap the gig needs more */
 static lv_obj_t *s_update; /* built on first open: the keyboard and the network list cost heap the gig never needs */
 static lv_obj_t *s_tempo_big, *s_tempo_hint;
 static float s_tempo_bpm;
@@ -236,6 +236,7 @@ typedef struct {
     int32_t mid_y;
     const char *unit;          /* "Page", "Bank" */
     void (*on_show)(int idx);  /* virtual pages */
+    bool wrap;                 /* past the last page lands on the first (and back) */
 } pager_t;
 
 static void pager_show(pager_t *p, int idx)
@@ -255,9 +256,9 @@ static void pager_show(pager_t *p, int idx)
     lv_obj_update_layout(p->label);
     lv_obj_set_x(p->label, EDGE_X + PAGER_W / 2 - lv_obj_get_width(p->label) / 2);
     lv_obj_set_y(p->label, p->mid_y - lv_obj_get_height(p->label) / 2);
-    /* Ends of the range: dim the arrow that goes nowhere. */
-    lv_obj_set_style_opa(p->up, idx == 0 ? LV_OPA_30 : LV_OPA_COVER, 0);
-    lv_obj_set_style_opa(p->down, idx == p->count - 1 ? LV_OPA_30 : LV_OPA_COVER, 0);
+    /* Ends of the range: dim the arrow that goes nowhere (a wrapping pager has none). */
+    lv_obj_set_style_opa(p->up, idx == 0 && !p->wrap ? LV_OPA_30 : LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(p->down, idx == p->count - 1 && !p->wrap ? LV_OPA_30 : LV_OPA_COVER, 0);
     if (p->on_show) p->on_show(idx);
 }
 
@@ -265,7 +266,9 @@ static void on_pager_step(lv_event_t *e)
 {
     pager_t *p = (pager_t *)lv_event_get_user_data(e);
     int delta = lv_event_get_target_obj(e) == p->up ? -1 : 1;
-    pager_show(p, p->current + delta);
+    int idx = p->current + delta;
+    if (p->wrap && p->count > 0) idx = (idx + p->count) % p->count;
+    pager_show(p, idx);
 }
 
 /* Column at the left edge from y to y + h; pages are added with pager_add_page and shown one at a time. */
@@ -904,6 +907,7 @@ static void build_presets(lv_obj_t *scr)
     s_presets_h = SCREEN_H - s_presets_top - 6;
     pager_create(&s_presets_pager, s_presets, s_presets_top, s_presets_h, "Bank");
     s_presets_pager.on_show = presets_show_bank;
+    s_presets_pager.wrap = true; /* like prev / next on the gig view: bank 16 -> bank 1 */
     for (int i = 0; i < PRESET_ROWS_MAX; i++) {
         lv_obj_t *row = make_box(s_presets, SETTING_X, s_presets_top, SETTING_RIGHT, PRESET_ROW_H_MAX, C_PANEL);
         lv_obj_set_style_radius(row, 8, 0);
@@ -1124,7 +1128,6 @@ void nano_ui_create(lv_display_t *disp, const nano_ui_callbacks_t *cb)
     build_main(scr);
     build_menu(scr);
     build_settings(scr);
-    build_presets(scr);
     build_tuner(scr);
     build_tempo(scr);
     build_connect(scr);
@@ -1147,8 +1150,15 @@ static void show_view(nano_view_t view, bool notify)
     s_view = view;
     lv_obj_set_hidden(s_menu, view != NANO_VIEW_MENU);
     lv_obj_set_hidden(s_settings, view != NANO_VIEW_SETTINGS);
-    if (view == NANO_VIEW_PRESETS) presets_open();
-    lv_obj_set_hidden(s_presets, view != NANO_VIEW_PRESETS);
+    if (view == NANO_VIEW_PRESETS) {
+        build_presets(s_scr);
+        presets_open();
+        lv_obj_set_hidden(s_presets, false);
+    } else if (s_presets) {
+        /* Async: the tap that closes it is still being handled by one of its children. */
+        lv_obj_delete_async(s_presets);
+        s_presets = NULL;
+    }
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
     lv_obj_set_hidden(s_tempo_view, view != NANO_VIEW_TEMPO);
     lv_obj_set_hidden(s_connect, view != NANO_VIEW_CONNECT);
