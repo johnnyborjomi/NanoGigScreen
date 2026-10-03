@@ -341,6 +341,13 @@ static void enter_update_mode(void)
     s_update_mode = true;
     ESP_LOGI(TAG, "update mode: Bluetooth off, Wi-Fi on");
     nano_ble_shutdown();
+    /* The pedal is gone until the restart: its buffers (~27 KB) become download headroom. The app loop
+     * skips the assembler from here on (packets still queued from the link are dropped). */
+    free(s_asm_buf);
+    free(s_meta_scratch);
+    s_asm_buf = NULL;
+    s_meta_scratch = NULL;
+    ESP_LOGI(TAG, "pedal buffers released, free heap %u B", (unsigned)esp_get_free_heap_size());
     if (nano_ota_start(ota_on_event) != 0) {
         if (lvgl_port_lock(100)) {
             nano_ui_update_status(NANO_UPDATE_ERROR, "Wi-Fi failed to start", 0);
@@ -969,7 +976,7 @@ static void app_task(void *arg)
             switch (m.kind) {
             case MSG_PACKET:
                 if (!nano_is_tuner_pitch_packet(m.pkt.data, m.pkt.len)) ESP_LOGD(TAG, "<- %u B", m.pkt.len);
-                nano_assembler_push(&s_asm, m.pkt.data, m.pkt.len, now_ms());
+                if (!s_update_mode) nano_assembler_push(&s_asm, m.pkt.data, m.pkt.len, now_ms());
                 break;
             case MSG_STATUS:
                 on_status(m.status, m.detail);
@@ -1054,7 +1061,7 @@ static void app_task(void *arg)
                 break;
             }
         }
-        nano_assembler_tick(&s_asm, now_ms());
+        if (!s_update_mode) nano_assembler_tick(&s_asm, now_ms());
         tempo_edit_tick();
         if (s_select_inflight && esp_timer_get_time() - s_select_sent_us > SELECT_ACK_TIMEOUT_US) {
             ESP_LOGW(TAG, "preset select ack timed out");

@@ -7,6 +7,7 @@
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_log.h"
@@ -292,7 +293,8 @@ static void install(void)
         emit(NANO_OTA_EV_ERROR, "Update server unreachable", 0);
         return;
     }
-    ESP_LOGI(TAG, "installing %s", desc.version);
+    ESP_LOGI(TAG, "installing %s (free heap %u B, largest block %u B)", desc.version, (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     int total = esp_https_ota_get_image_size(h), last = -1;
     while ((err = esp_https_ota_perform(h)) == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
         int read = esp_https_ota_get_image_len_read(h);
@@ -347,7 +349,8 @@ static void ota_task(void *arg)
             install();
             break;
         }
-        ESP_LOGI(TAG, "free heap %u B (min %u B)", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
+        ESP_LOGI(TAG, "free heap %u B (min %u B, largest block %u B)", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     }
 }
 
