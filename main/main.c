@@ -920,6 +920,7 @@ static void on_status(nano_ble_status_t status, const char *detail)
     bool ready = status == NANO_BLE_READY;
     if (ready && !s_link_ready) {
         s_link_ready = true;
+        ESP_LOGI(TAG, "link ready, free heap %u B (lowest %u B)", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
         s_meta_requested_this_link = false;
         s_req_head = s_req_count = 0;
         s_select_inflight = false;
