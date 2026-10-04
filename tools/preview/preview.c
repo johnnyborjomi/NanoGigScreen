@@ -252,6 +252,16 @@ int main(int argc, char **argv)
     nano_ui_show(NANO_VIEW_MAIN);
     render(200);
     save(dir, "9e-main-list-button");
+    {
+        /* Names longer than the line: one line, ellipsis. */
+        nano_state_t lng = st;
+        strcpy(lng.capture_name, "Friedman BE-100 Deluxe HBE Ch2");
+        strcpy(lng.ir_short_name, "4x12 Mesa OS V30 SM57 CapEdge");
+        nano_ui_set_stale(false);
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9f-long-capture-ir");
+    }
 
     /* 10. firmware: settings page 3, then the update view in each state */
     nano_ui_set_firmware_version("v0.3.0");

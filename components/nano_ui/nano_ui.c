@@ -538,12 +538,12 @@ static void build_main(lv_obj_t *scr)
     s_capture_dot = make_dot(s_main, lx, LINES_Y + 6, 9);
     s_capture = make_label(s_main, &lv_font_montserrat_12, C_TEXT);
     lv_obj_set_pos(s_capture, lx + 15, LINES_Y + 2);
-    lv_obj_set_width(s_capture, lw);
+    lv_obj_set_size(s_capture, lw, lv_font_get_line_height(&lv_font_montserrat_12)); /* one line: LONG_DOT needs a fixed height */
     lv_label_set_long_mode(s_capture, LV_LABEL_LONG_DOT);
     s_ir_dot = make_dot(s_main, lx, LINES_Y + 26, 9);
     s_ir = make_label(s_main, &lv_font_montserrat_12, C_MUTED);
     lv_obj_set_pos(s_ir, lx + 15, LINES_Y + 22);
-    lv_obj_set_width(s_ir, lw);
+    lv_obj_set_size(s_ir, lw, lv_font_get_line_height(&lv_font_montserrat_12)); /* one line: LONG_DOT needs a fixed height */
     lv_label_set_long_mode(s_ir, LV_LABEL_LONG_DOT);
 
     /* Five FX tiles: pre1 pre2 | post1 post2 post3. */
