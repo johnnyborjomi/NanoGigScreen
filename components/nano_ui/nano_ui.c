@@ -202,7 +202,8 @@ static const lv_font_t *fit_font(const char *text, int32_t max_w, int32_t max_h)
     return &lv_font_montserrat_20;
 }
 
-/* Tile names wrap on spaces; a single word wider than the tile drops to the 10 px font. */
+/* Tile names wrap on spaces; a single word wider than the tile, or a name that needs more than
+ * three lines ("Solid State Comp (M)"), drops to the 10 px font. */
 static const lv_font_t *tile_font(const char *text, int32_t max_w)
 {
     const char *p = text;
@@ -218,6 +219,9 @@ static const lv_font_t *tile_font(const char *text, int32_t max_w)
         if (size.x > max_w) return &montserrat_medium_10;
         p = *end ? end + 1 : end;
     }
+    lv_point_t size;
+    lv_text_get_size(&size, text, &montserrat_medium_12, 0, 0, max_w, LV_TEXT_FLAG_NONE);
+    if (size.y > 3 * lv_font_get_line_height(&montserrat_medium_12)) return &montserrat_medium_10;
     return &montserrat_medium_12;
 }
 

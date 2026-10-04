@@ -261,6 +261,15 @@ int main(int argc, char **argv)
         nano_ui_set_state(&lng, &meta);
         render(200);
         save(dir, "9f-long-capture-ir");
+        /* Four-line tile names drop to the 10 px font. */
+        strcpy(lng.fx[0].id, "8C27");
+        lng.fx[0].model = nano_lookup_fx_model("8C27");
+        strcpy(lng.fx[1].id, "9527");
+        lng.fx[1].model = nano_lookup_fx_model("9527");
+        lng.fx_on[0] = true;
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9g-four-line-tile");
     }
 
     /* 10. firmware: settings page 3, then the update view in each state */
