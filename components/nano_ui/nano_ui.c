@@ -962,7 +962,10 @@ static void presets_open(void)
  */
 #define CAP_DRAG_MS 100
 #define CAP_HOLD_MS 1500
-#define CAP_JITTER 2       /* a resting finger wobbles ~1 px = 1 raw step on the resistive panel */
+/* A finger resting on the slider wobbles +-2 raw steps on the resistive panel: a move that turns
+ * back needs CAP_TURN steps, one that carries on in the same direction CAP_MOVE. */
+#define CAP_MOVE 2
+#define CAP_TURN 5
 #define CAP_STEP_W 62
 #define CAP_STEP_H 40
 #define CAP_STEP_GAP 6
@@ -973,7 +976,11 @@ static uint32_t s_cap_sent_ms;
 static uint32_t s_cap_local_ms;    /* last change made on this page */
 static bool s_cap_local;           /* a change was made (s_cap_local_ms is meaningful) */
 static int s_cap_preset = -1;      /* preset the shown volume belongs to */
-static int s_cap_drag_v;           /* slider value accepted during this press (moves by CAP_JITTER or more) */
+static int s_cap_drag_v;           /* slider value accepted during this press */
+static int s_cap_drag_dir;         /* direction of the last accepted move: -1, 0 (none yet), +1 */
+/* A run of step taps aims at exact readouts: the target of the last tap and the raw value it landed
+ * on, so a tap that could only get close (-1.9 for -2.0) does not shift the next one. */
+static int s_cap_target_tenths, s_cap_target_raw = -1;
 
 static bool capture_writable(void) { return s_cb.on_capture_volume != NULL && s_cap_volume >= 0; }
 
@@ -1039,26 +1046,37 @@ static void capture_set_volume(int raw)
     capture_send(raw);
 }
 
-/* Step the readout by `tenths`: the nearest raw value (in that direction) whose readout reaches the
- * target, so -0.1 from -2.9 lands on -3.0 and -1 from -2.0 on -3.0, as Cortex Cloud reads them. */
+/*
+ * Step by `tenths` from the value aimed at (the readout, unless this continues a run of taps): the
+ * raw value whose readout is closest to the target, at least one raw step in that direction. Where
+ * the pedal has no step for the exact readout (below 0 dB its steps are 0.11-0.18 dB, under -12 dB
+ * coarser still) it lands on the nearest one, and the next tap still aims at the exact value.
+ */
 static void on_capture_step(lv_event_t *e)
 {
     if (!capture_writable()) return;
     int tenths = (int)(intptr_t)lv_event_get_user_data(e);
     int dir = tenths > 0 ? 1 : -1;
-    int target = nano_capture_volume_tenths((uint8_t)s_cap_volume) + tenths;
-    int raw = s_cap_volume;
-    while (raw + dir >= 0 && raw + dir <= 255) {
-        raw += dir;
+    int base = s_cap_volume == s_cap_target_raw ? s_cap_target_tenths : nano_capture_volume_tenths((uint8_t)s_cap_volume);
+    int target = base + tenths;
+    if (target < -240) target = -240;
+    if (target > 120) target = 120;
+    int best = -1, best_err = 0;
+    for (int raw = s_cap_volume + dir; raw >= 0 && raw <= 255; raw += dir) {
         int t = nano_capture_volume_tenths((uint8_t)raw);
-        if (dir > 0 ? t >= target : t <= target) break;
+        int err = abs(t - target);
+        if (best < 0 || err < best_err) { best = raw; best_err = err; }
+        if (dir > 0 ? t >= target : t <= target) break; /* past the target: nothing closer beyond */
     }
-    capture_set_volume(raw);
+    if (best < 0) return; /* already at the end of the range */
+    s_cap_target_tenths = target;
+    s_cap_target_raw = best;
+    capture_set_volume(best);
 }
 
-/* The slider follows the finger in moves of CAP_JITTER raw steps or more: a finger resting on it
- * (fine-tuning, or just holding) no longer flickers +-0.1 dB. Release keeps the last accepted
- * value, not the lift-off sample (which drifts on this panel). */
+/* The slider follows the finger in moves of CAP_MOVE raw steps, and turns back only after CAP_TURN:
+ * a finger resting on it (fine-tuning, or just holding) no longer flickers. Release keeps the last
+ * accepted value, not the lift-off sample (which drifts on this panel). */
 static void on_capture_slider(lv_event_t *e)
 {
     if (!capture_writable()) return;
@@ -1066,12 +1084,16 @@ static void on_capture_slider(lv_event_t *e)
     int v = lv_slider_get_value(s_cap_slider);
     if (code == LV_EVENT_PRESSED) {
         s_cap_drag_v = s_cap_volume;
+        s_cap_drag_dir = 0;
     } else if (code == LV_EVENT_VALUE_CHANGED) {
-        if (abs(v - s_cap_drag_v) < CAP_JITTER) {
+        int d = v - s_cap_drag_v, dir = d > 0 ? 1 : -1;
+        int need = (s_cap_drag_dir == 0 || dir == s_cap_drag_dir) ? CAP_MOVE : CAP_TURN;
+        if (abs(d) < need) {
             lv_slider_set_value(s_cap_slider, s_cap_drag_v, LV_ANIM_OFF);
             return;
         }
         s_cap_drag_v = v;
+        s_cap_drag_dir = dir;
         capture_show_value(v);
         s_cap_volume = v;
         s_cap_local = true;
@@ -1123,6 +1145,7 @@ static void build_capture(lv_obj_t *scr)
     lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_RELEASED, NULL);
 
     s_cap_sent = -1;
+    s_cap_target_raw = -1;
     const int32_t right = SCREEN_W - CAP_EDGE;
     s_cap_steps[0] = capture_step_button(CAP_EDGE, steps_y, "-1 dB", -10);
     s_cap_steps[1] = capture_step_button(CAP_EDGE + CAP_STEP_W + CAP_STEP_GAP, steps_y, "-0.1", -1);

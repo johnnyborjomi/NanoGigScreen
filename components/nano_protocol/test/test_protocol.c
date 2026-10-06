@@ -396,6 +396,7 @@ static void test_labels_and_models(void)
         CHECK(nano_capture_volume_tenths(101) == -30 && nano_capture_volume_tenths(102) == -29);
         CHECK(nano_capture_volume_tenths(128) == 0 && nano_capture_volume_tenths(39) == -120);
         CHECK(nano_capture_volume_tenths(0) == -240 && nano_capture_volume_tenths(255) == 120);
+        CHECK(nano_capture_volume_tenths(110) == -20); /* -1.995 dB: on the boundary, within the fit */
     }
     nano_event_t ev;
     const uint8_t ack[] = { 0x08, 0xC0, 0x08, 0x01, 0x18, 0x01, 0x44, 0x00, 0x00, 0x00 };

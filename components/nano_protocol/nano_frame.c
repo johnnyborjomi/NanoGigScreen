@@ -148,7 +148,8 @@ uint8_t nano_capture_volume_raw(float db)
 
 int nano_capture_volume_tenths(uint8_t raw)
 {
-    return (int)truncf(nano_capture_volume_db(raw) * 10.0f);
+    float tenths = nano_capture_volume_db(raw) * 10.0f;
+    return (int)truncf(tenths < 0 ? tenths - 0.1f : tenths + 0.1f);
 }
 
 size_t nano_build_exp_assign_request(uint8_t *out, size_t cap, uint8_t preset_index)

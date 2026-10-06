@@ -124,7 +124,8 @@ size_t nano_build_capture_volume(uint8_t *out, size_t cap, uint8_t raw);
 float nano_capture_volume_db(uint8_t raw);
 uint8_t nano_capture_volume_raw(float db);
 /* What Cortex Cloud shows for `raw`, in tenths of a dB: the value cut toward zero, not rounded
- * (raw 101 = -3.07 dB reads "-3.0" there; all five readings above agree). */
+ * (raw 101 = -3.07 dB reads "-3.0" there; all five readings above agree), with 0.01 dB of slack
+ * for the fit at the boundaries (raw 110 = -1.995 reads -2.0, not -1.9). */
 int nano_capture_volume_tenths(uint8_t raw);
 
 /*
