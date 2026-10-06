@@ -230,6 +230,48 @@ int main(int argc, char **argv)
     render(200);
     save(dir, "8b-tempo");
 
+    /* 9b. presets list: 4 per bank (opens on the shown preset's bank), 8 per bank, 3 per bank */
+    nano_ui_set_preset(14, &meta);
+    nano_ui_show(NANO_VIEW_PRESETS);
+    render(200);
+    save(dir, "9b-presets-4");
+    nano_ui_show(NANO_VIEW_MAIN);
+    nano_ui_set_bank_size(8);
+    nano_ui_set_preset(0, &meta);
+    nano_ui_show(NANO_VIEW_PRESETS);
+    render(200);
+    save(dir, "9c-presets-8");
+    nano_ui_show(NANO_VIEW_MAIN);
+    nano_ui_set_bank_size(3);
+    nano_ui_set_preset(63, &meta);
+    nano_ui_show(NANO_VIEW_PRESETS);
+    render(200);
+    save(dir, "9d-presets-3-last");
+    nano_ui_set_bank_size(4);
+    nano_ui_set_preset(33, &meta);
+    nano_ui_show(NANO_VIEW_MAIN);
+    render(200);
+    save(dir, "9e-main-list-button");
+    {
+        /* Names longer than the line: one line, ellipsis. */
+        nano_state_t lng = st;
+        strcpy(lng.capture_name, "Friedman BE-100 Deluxe HBE Ch2");
+        strcpy(lng.ir_short_name, "4x12 Mesa OS V30 SM57 CapEdge");
+        nano_ui_set_stale(false);
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9f-long-capture-ir");
+        /* Four-line tile names drop to the 10 px font. */
+        strcpy(lng.fx[0].id, "8C27");
+        lng.fx[0].model = nano_lookup_fx_model("8C27");
+        strcpy(lng.fx[1].id, "9527");
+        lng.fx[1].model = nano_lookup_fx_model("9527");
+        lng.fx_on[0] = true;
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9g-four-line-tile");
+    }
+
     /* 10. firmware: settings page 3, then the update view in each state */
     nano_ui_set_firmware_version("v0.3.0");
     nano_ui_update_set_wifi("Studio 5G");

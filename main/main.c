@@ -62,7 +62,7 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
@@ -71,7 +71,7 @@ typedef struct {
     bool fx_on;
     bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show, MSG_ROTATE: 180 degrees */
     int delta;      /* MSG_TEMPO_DELTA */
-    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS */
+    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT (preset index) */
     packet_t pkt;
 } app_msg_t;
 
@@ -252,6 +252,7 @@ static void ble_on_notify(const uint8_t *data, size_t len)
 
 static void ui_on_prev(void) { app_msg_t m = { .kind = MSG_PREV }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_next(void) { app_msg_t m = { .kind = MSG_NEXT }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_select(uint8_t idx) { app_msg_t m = { .kind = MSG_SELECT, .value = idx }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_toggle_fx(uint8_t slot, bool on)
 {
     app_msg_t m = { .kind = MSG_TOGGLE_FX, .fx_slot = slot, .fx_on = on };
@@ -510,11 +511,9 @@ static void select_settled(void)
 
 /* Show the target at once; send it now, or hold it while an earlier select is still unacked
  * (the pedal would load every preset skipped past, ~150 ms each). */
-static void select_preset(int delta)
+static void select_preset_index(int idx)
 {
-    if (!s_link_ready) return;
-    int base = pending_preset_active() ? s_pending_preset : (s_state_valid ? s_state.active_preset : 0);
-    int idx = (base + delta + NANO_PRESET_COUNT) % NANO_PRESET_COUNT;
+    if (!s_link_ready || idx < 0 || idx >= NANO_PRESET_COUNT) return;
     s_pending_preset = idx;
     s_pending_since_us = esp_timer_get_time();
     s_state.active_preset = (uint8_t)idx; /* optimistic; the dump confirms */
@@ -525,6 +524,14 @@ static void select_preset(int delta)
     }
     if (!s_select_inflight) send_select(idx);
     else ESP_LOGI(TAG, "   preset %d held until the ack", idx + 1);
+}
+
+/* prev / next: step from the target still in flight, if any. */
+static void select_preset(int delta)
+{
+    if (!s_link_ready) return;
+    int base = pending_preset_active() ? s_pending_preset : (s_state_valid ? s_state.active_preset : 0);
+    select_preset_index((base + delta + NANO_PRESET_COUNT) % NANO_PRESET_COUNT);
 }
 
 /* FX block on/off: `0A C0 08 01 18 <slot 4..8> 20 <0 on / 1 off> 1F 00 00 00` (verified 2026-09-12). */
@@ -987,6 +994,9 @@ static void app_task(void *arg)
             case MSG_NEXT:
                 select_preset(+1);
                 break;
+            case MSG_SELECT:
+                select_preset_index(m.value);
+                break;
             case MSG_TOGGLE_FX:
                 toggle_fx(m.fx_slot, m.fx_on);
                 break;
@@ -1099,7 +1109,7 @@ void app_main(void)
     uint8_t brightness = brightness_load();
     cyd_backlight_set_level(brightness);
     nano_ui_callbacks_t ui_cb = {
-        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_toggle_fx = ui_on_toggle_fx,
+        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute, .on_expression_show = ui_on_expression_show,

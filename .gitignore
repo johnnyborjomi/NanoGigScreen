@@ -5,6 +5,7 @@ managed_components/
 dependencies.lock
 components/nano_protocol/test/build/
 .vscode/
+.cache/
 .DS_Store
 tools/preview/build/
 tools/preview/out/
