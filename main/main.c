@@ -62,7 +62,7 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT, MSG_CAPTURE_VOLUME } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
@@ -71,7 +71,7 @@ typedef struct {
     bool fx_on;
     bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show, MSG_ROTATE: 180 degrees */
     int delta;      /* MSG_TEMPO_DELTA */
-    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT (preset index) */
+    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT (preset index), MSG_CAPTURE_VOLUME (raw) */
     packet_t pkt;
 } app_msg_t;
 
@@ -119,7 +119,7 @@ static int64_t s_select_sent_us, s_select_last_us;
 #define SELECT_ACK_TIMEOUT_US (400 * 1000)
 #define SELECT_SETTLE_US (1500 * 1000) /* no metadata re-check this soon after a select: the pedal may still be loading */
 /* Per-tile optimistic state: a dump requested before the tile's last write cannot undo the tap. */
-static int64_t s_fx_written_us[NANO_FX_SLOT_COUNT], s_gate_written_us;
+static int64_t s_fx_written_us[NANO_FX_SLOT_COUNT], s_gate_written_us, s_capvol_written_us;
 #define TUNER_SILENCE_US (600 * 1000)
 #define STATE_MIN_GAP_US (200 * 1000) /* a select's ack events also ask; one dump is enough */
 static bool s_link_ready;
@@ -253,6 +253,7 @@ static void ble_on_notify(const uint8_t *data, size_t len)
 static void ui_on_prev(void) { app_msg_t m = { .kind = MSG_PREV }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_next(void) { app_msg_t m = { .kind = MSG_NEXT }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_select(uint8_t idx) { app_msg_t m = { .kind = MSG_SELECT, .value = idx }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_capture_volume(uint8_t raw) { app_msg_t m = { .kind = MSG_CAPTURE_VOLUME, .value = raw }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_toggle_fx(uint8_t slot, bool on)
 {
     app_msg_t m = { .kind = MSG_TOGGLE_FX, .fx_slot = slot, .fx_on = on };
@@ -552,6 +553,21 @@ static void toggle_fx(uint8_t slot, bool currently_on)
     }
 }
 
+/* Capture volume, raw 0..255 (Cortex Cloud's write, 2026-10-07). A live edit: the preset is not saved.
+ * The capture page already shows the value; a dump requested after this write confirms it. */
+static void set_capture_volume(uint8_t raw)
+{
+    if (!s_link_ready || !s_state_valid) return;
+    uint8_t frame[16];
+    size_t n = nano_build_capture_volume(frame, sizeof(frame), raw);
+    if (n && nano_ble_write(frame, n) == 0) {
+        ESP_LOGI(TAG, "-> capture volume %u (%.1f dB)", raw, (double)nano_capture_volume_db(raw));
+        s_state.capture_volume = raw;
+        s_capvol_written_us = esp_timer_get_time();
+        schedule_state(CONFIRM_MS);
+    }
+}
+
 /* Gate on/off: `0A C0 08 01 18 09 20 <0 on / 1 off> 1F 00 00 00` (verified 2026-09-12). */
 static void toggle_gate(bool currently_on)
 {
@@ -689,6 +705,7 @@ static void on_state(const nano_state_t *in)
         if (s_fx_written_us[i] > requested_us) { copy.fx_on[i] = s_state.fx_on[i]; stale_tile = true; }
     }
     if (s_gate_written_us > requested_us) { copy.gate_on = s_state.gate_on; stale_tile = true; }
+    if (s_capvol_written_us > requested_us && copy.active_preset == s_state.active_preset) { copy.capture_volume = s_state.capture_volume; stale_tile = true; }
     if (stale_tile) schedule_state(CONFIRM_MS);
     if (!s_state_valid || s_state.active_preset != st->active_preset) s_exp_assign_tries = 0;
     s_state = *st;
@@ -997,6 +1014,9 @@ static void app_task(void *arg)
             case MSG_SELECT:
                 select_preset_index(m.value);
                 break;
+            case MSG_CAPTURE_VOLUME:
+                set_capture_volume(m.value);
+                break;
             case MSG_TOGGLE_FX:
                 toggle_fx(m.fx_slot, m.fx_on);
                 break;
@@ -1109,7 +1129,7 @@ void app_main(void)
     uint8_t brightness = brightness_load();
     cyd_backlight_set_level(brightness);
     nano_ui_callbacks_t ui_cb = {
-        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_toggle_fx = ui_on_toggle_fx,
+        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_capture_volume = ui_on_capture_volume, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute, .on_expression_show = ui_on_expression_show,

@@ -1,5 +1,6 @@
 #include "nano_ui.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -950,11 +951,12 @@ static void presets_open(void)
 }
 
 /*
- * Capture page: name, on / off dot, volume slider with 1 dB and 0.1 dB steps either side.
- * Provisional dB scale: raw 127 = 0.0 dB, one raw step = 0.1 dB (to be checked against Cortex Cloud).
- * Read-only until the app sets on_capture_volume (the pedal's volume write is not known yet).
+ * Capture page: name, on / off dot, volume slider with 1 dB and 0.1 dB steps either side, in Cortex
+ * Cloud's dB scale (nano_capture_volume_db). The slider writes while it is dragged (at most every
+ * CAP_DRAG_MS, like Cortex Cloud) and once more on release. Read-only when on_capture_volume is unset.
  */
-#define CAP_VOL_ZERO 127
+#define CAP_VOL_ZERO 128   /* 0.0 dB */
+#define CAP_DRAG_MS 100
 #define CAP_STEP_W 60
 #define CAP_STEP_H 40
 
@@ -963,8 +965,13 @@ static bool capture_writable(void) { return s_cb.on_capture_volume != NULL && s_
 static void capture_show_value(int raw)
 {
     char t[16];
-    if (raw < 0) snprintf(t, sizeof(t), "- dB");
-    else snprintf(t, sizeof(t), "%+.1f dB", (raw - CAP_VOL_ZERO) / 10.0);
+    if (raw < 0) {
+        snprintf(t, sizeof(t), "- dB");
+    } else {
+        float db = nano_capture_volume_db((uint8_t)raw);
+        if (db > -0.05f && db < 0.05f) db = 0.0f; /* no "-0.0" */
+        snprintf(t, sizeof(t), "%+.1f dB", (double)db);
+    }
     lv_label_set_text(s_cap_value, t);
 }
 
@@ -988,27 +995,49 @@ static void capture_refresh(void)
     }
 }
 
+static int s_cap_sent = -1;        /* last value written (drag dedupe) */
+static uint32_t s_cap_sent_ms;
+
+static void capture_send(int raw)
+{
+    if (raw == s_cap_sent) return;
+    s_cap_sent = raw;
+    s_cap_sent_ms = lv_tick_get();
+    s_cb.on_capture_volume((uint8_t)raw);
+}
+
 static void capture_set_volume(int raw)
 {
     if (!capture_writable()) return;
     raw = raw < 0 ? 0 : raw > 255 ? 255 : raw;
     s_cap_volume = raw; /* optimistic; the next state dump confirms */
     capture_refresh();
-    s_cb.on_capture_volume((uint8_t)raw);
+    capture_send(raw);
 }
 
+/* +-1 dB / +-0.1 dB from the shown value; a step too small for the raw scale still moves one raw step. */
 static void on_capture_step(lv_event_t *e)
 {
-    int delta = (int)(intptr_t)lv_event_get_user_data(e);
-    capture_set_volume(s_cap_volume + delta);
+    if (!capture_writable()) return;
+    int tenths = (int)(intptr_t)lv_event_get_user_data(e);
+    float shown = roundf(nano_capture_volume_db((uint8_t)s_cap_volume) * 10.0f) / 10.0f;
+    int raw = nano_capture_volume_raw(shown + tenths / 10.0f);
+    if (raw == s_cap_volume) raw += tenths > 0 ? 1 : -1;
+    capture_set_volume(raw);
 }
 
 static void on_capture_slider(lv_event_t *e)
 {
+    if (!capture_writable()) return;
     lv_event_code_t code = lv_event_get_code(e);
     int v = lv_slider_get_value(s_cap_slider);
-    if (code == LV_EVENT_VALUE_CHANGED) capture_show_value(v); /* follow the finger, write on release */
-    else if (code == LV_EVENT_RELEASED) capture_set_volume(v);
+    if (code == LV_EVENT_VALUE_CHANGED) {
+        capture_show_value(v);
+        s_cap_volume = v;
+        if (lv_tick_elaps(s_cap_sent_ms) >= CAP_DRAG_MS) capture_send(v);
+    } else if (code == LV_EVENT_RELEASED) {
+        capture_set_volume(v); /* the final position, whatever the throttle skipped */
+    }
 }
 
 static lv_obj_t *capture_step_button(int32_t x, int32_t y, const char *text, int delta)
@@ -1036,6 +1065,7 @@ static void build_capture(lv_obj_t *scr)
     lv_obj_set_pos(s_cap_value, 0, 92);
     const int32_t y1 = 134, y2 = y1 + CAP_STEP_H + 4;
     const int32_t lx = 10, rx = SCREEN_W - 10 - CAP_STEP_W;
+    s_cap_sent = -1;
     s_cap_steps[0] = capture_step_button(lx, y1, "-1 dB", -10);
     s_cap_steps[1] = capture_step_button(lx, y2, "-0.1", -1);
     s_cap_steps[2] = capture_step_button(rx, y1, "+1 dB", 10);

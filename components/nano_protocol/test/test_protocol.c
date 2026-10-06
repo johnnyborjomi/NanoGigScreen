@@ -1,4 +1,5 @@
 /* Host tests for nano_protocol; build with the CMakeLists.txt next to this file. */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -368,6 +369,30 @@ static void test_labels_and_models(void)
     uint8_t m[10];
     CHECK(nano_build_outputs_mute(m, sizeof(m), true) == 10 && m[4] == 0x68 && m[5] == 1 && m[6] == 0x43);
     CHECK(nano_build_outputs_mute(m, sizeof(m), false) == 10 && m[5] == 0);
+
+    printf("capture volume\n");
+    {
+        /* Byte-exact against Cortex Cloud's writes (HCI snoop 2026-10-07). */
+        const uint8_t v0[] = { 0x0A, 0xC0, 0x18, 0x0A, 0x20, 0x00, 0x28, 0x00, 0x1A, 0x00, 0x00, 0x00 };
+        const uint8_t v102[] = { 0x0A, 0xC0, 0x18, 0x0A, 0x20, 0x66, 0x28, 0x00, 0x1A, 0x00, 0x00, 0x00 };
+        const uint8_t v128[] = { 0x0B, 0xC0, 0x18, 0x0A, 0x20, 0x80, 0x01, 0x28, 0x00, 0x1A, 0x00, 0x00, 0x00 };
+        const uint8_t v255[] = { 0x0B, 0xC0, 0x18, 0x0A, 0x20, 0xFF, 0x01, 0x28, 0x00, 0x1A, 0x00, 0x00, 0x00 };
+        uint8_t f[16];
+        CHECK(nano_build_capture_volume(f, sizeof(f), 0) == 12 && memcmp(f, v0, 12) == 0);
+        CHECK(nano_build_capture_volume(f, sizeof(f), 102) == 12 && memcmp(f, v102, 12) == 0);
+        CHECK(nano_build_capture_volume(f, sizeof(f), 128) == 13 && memcmp(f, v128, 13) == 0);
+        CHECK(nano_build_capture_volume(f, sizeof(f), 255) == 13 && memcmp(f, v255, 13) == 0);
+        CHECK(nano_build_capture_volume(f, 12, 200) == 0);
+        /* The scale against Cortex Cloud's readings. */
+        CHECK(nano_capture_volume_raw(-24.0f) == 0 && nano_capture_volume_raw(12.0f) == 255);
+        CHECK(nano_capture_volume_raw(0.0f) == 128);
+        CHECK(nano_capture_volume_raw(-12.0f) == 39);
+        CHECK(nano_capture_volume_raw(-2.9f) == 102);
+        CHECK(fabsf(nano_capture_volume_db(128) - 0.0f) < 0.05f);
+        CHECK(fabsf(nano_capture_volume_db(39) + 12.0f) < 0.05f);
+        CHECK(fabsf(nano_capture_volume_db(102) + 2.9f) < 0.05f);
+        CHECK(nano_capture_volume_db(0) == -24.0f && fabsf(nano_capture_volume_db(255) - 12.0f) < 0.001f);
+    }
     nano_event_t ev;
     const uint8_t ack[] = { 0x08, 0xC0, 0x08, 0x01, 0x18, 0x01, 0x44, 0x00, 0x00, 0x00 };
     nano_decode_event(ack, sizeof(ack), &ev); CHECK(ev.kind == NANO_EV_OUTPUTS_MUTE_ACK);

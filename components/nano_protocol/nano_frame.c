@@ -1,5 +1,6 @@
 #include "nano_frame.h"
 
+#include <math.h>
 #include <string.h>
 
 const uint8_t NANO_REQ_METADATA[8] = { 0x06, 0xC0, 0x08, 0x03, 0x01, 0x00, 0x00, 0x00 };
@@ -101,6 +102,48 @@ size_t nano_build_outputs_mute(uint8_t *out, size_t cap, bool mute)
     const uint8_t frame[10] = { 0x08, 0xC0, 0x08, 0x01, 0x68, mute ? 0x01 : 0x00, 0x43, 0x00, 0x00, 0x00 };
     memcpy(out, frame, 10);
     return 10;
+}
+
+size_t nano_build_capture_volume(uint8_t *out, size_t cap, uint8_t raw)
+{
+    size_t n = raw < 0x80 ? 12 : 13;
+    if (cap < n) return 0;
+    size_t i = 0;
+    out[i++] = (uint8_t)(n - 2);
+    out[i++] = 0xC0;
+    out[i++] = 0x18; /* field 3: selector 10 */
+    out[i++] = 0x0A;
+    out[i++] = 0x20; /* field 4: the value */
+    if (raw < 0x80) {
+        out[i++] = raw;
+    } else {
+        out[i++] = (uint8_t)(raw | 0x80);
+        out[i++] = 0x01;
+    }
+    out[i++] = 0x28; /* field 5 = 0 */
+    out[i++] = 0x00;
+    out[i++] = 0x1A;
+    out[i++] = 0x00;
+    out[i++] = 0x00;
+    out[i++] = 0x00;
+    return n;
+}
+
+#define CAP_VOL_MIN_DB (-24.0f)
+#define CAP_VOL_SPAN_DB 36.0f
+#define CAP_VOL_CURVE 1.708f
+
+float nano_capture_volume_db(uint8_t raw)
+{
+    return CAP_VOL_SPAN_DB * powf(raw / 255.0f, 1.0f / CAP_VOL_CURVE) + CAP_VOL_MIN_DB;
+}
+
+uint8_t nano_capture_volume_raw(float db)
+{
+    float x = (db - CAP_VOL_MIN_DB) / CAP_VOL_SPAN_DB;
+    if (x <= 0) return 0;
+    if (x >= 1) return 255;
+    return (uint8_t)lroundf(255.0f * powf(x, CAP_VOL_CURVE));
 }
 
 size_t nano_build_exp_assign_request(uint8_t *out, size_t cap, uint8_t preset_index)
