@@ -129,6 +129,7 @@ static void test_state_single(void)
     CHECK(s.gate_on);
     CHECK(s.capture_on);
     CHECK(s.amp[0] == 154);
+    CHECK(s.capture_volume == 144); /* field 44 */
     CHECK_STR(s.capture_name, "CA John's Ch1 1");
     CHECK_STR(s.ir_short_name, "110 US PRN C10R");
     CHECK_STR(s.firmware, "2.2.1");

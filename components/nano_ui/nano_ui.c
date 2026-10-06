@@ -62,6 +62,7 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 static nano_ui_callbacks_t s_cb;
 static lv_obj_t *s_scr;
 static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
+static lv_obj_t *s_capture_view; /* built on open, freed on close, like the presets list */
 static lv_obj_t *s_presets; /* built on open, freed on close: ~10 KB of heap the gig needs more */
 static lv_obj_t *s_update; /* built on first open: the keyboard and the network list cost heap the gig never needs */
 static lv_obj_t *s_tempo_big, *s_tempo_hint;
@@ -79,6 +80,11 @@ static lv_obj_t *s_status_dot, *s_status, *s_tempo, *s_gate, *s_list_btn;
 static bool s_gate_on;
 static lv_obj_t *s_preset_label, *s_preset_name, *s_prev, *s_next;
 static lv_obj_t *s_capture_dot, *s_capture, *s_ir_dot, *s_ir;
+/* The capture as the last state dump showed it (the capture page draws from these). */
+static char s_cap_name[NANO_NAME_CAP];
+static bool s_cap_on;
+static int s_cap_volume = -1;       /* raw 0..255, -1 = unknown */
+static lv_obj_t *s_cap_dot, *s_cap_name_l, *s_cap_value, *s_cap_slider, *s_cap_steps[4];
 static lv_obj_t *s_tiles[NANO_FX_SLOT_COUNT], *s_tile_names[NANO_FX_SLOT_COUNT], *s_tile_tags[NANO_FX_SLOT_COUNT];
 static bool s_tile_present[NANO_FX_SLOT_COUNT];
 static bool s_tile_on[NANO_FX_SLOT_COUNT];
@@ -323,6 +329,7 @@ static void on_back_to_menu(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_MEN
 static void on_open_tempo(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_TEMPO); }
 static void on_open_update(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_UPDATE); }
 static void on_open_presets(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_PRESETS); }
+static void on_open_capture(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_CAPTURE); }
 static void on_tempo_step(lv_event_t *e)
 {
     int delta = (int)(intptr_t)lv_event_get_user_data(e);
@@ -544,6 +551,12 @@ static void build_main(lv_obj_t *scr)
     lv_obj_set_pos(s_capture, lx + 15, LINES_Y + 2);
     lv_obj_set_size(s_capture, lw, lv_font_get_line_height(&lv_font_montserrat_12)); /* one line: LONG_DOT needs a fixed height */
     lv_label_set_long_mode(s_capture, LV_LABEL_LONG_DOT);
+    /* Tap the capture line (dot or name) for the capture page. */
+    lv_obj_t *cap_hit = make_box(s_main, lx - 4, LINES_Y, 15 + lw + 8, 20, C_BG);
+    lv_obj_set_style_bg_opa(cap_hit, LV_OPA_TRANSP, 0);
+    lv_obj_set_clickable(cap_hit, true);
+    lv_obj_add_event_cb(cap_hit, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(cap_hit, on_open_capture, LV_EVENT_CLICKED, NULL);
     s_ir_dot = make_dot(s_main, lx, LINES_Y + 26, 9);
     s_ir = make_label(s_main, &lv_font_montserrat_12, C_MUTED);
     lv_obj_set_pos(s_ir, lx + 15, LINES_Y + 22);
@@ -936,6 +949,121 @@ static void presets_open(void)
     pager_set_count(&s_presets_pager, banks, s_preset / s_per_bank);
 }
 
+/*
+ * Capture page: name, on / off dot, volume slider with 1 dB and 0.1 dB steps either side.
+ * Provisional dB scale: raw 127 = 0.0 dB, one raw step = 0.1 dB (to be checked against Cortex Cloud).
+ * Read-only until the app sets on_capture_volume (the pedal's volume write is not known yet).
+ */
+#define CAP_VOL_ZERO 127
+#define CAP_STEP_W 60
+#define CAP_STEP_H 40
+
+static bool capture_writable(void) { return s_cb.on_capture_volume != NULL && s_cap_volume >= 0; }
+
+static void capture_show_value(int raw)
+{
+    char t[16];
+    if (raw < 0) snprintf(t, sizeof(t), "- dB");
+    else snprintf(t, sizeof(t), "%+.1f dB", (raw - CAP_VOL_ZERO) / 10.0);
+    lv_label_set_text(s_cap_value, t);
+}
+
+static void capture_refresh(void)
+{
+    if (!s_capture_view) return;
+    lv_obj_set_style_bg_color(s_cap_dot, lv_color_hex(s_cap_on ? C_ON : C_DIM), 0);
+    lv_label_set_text(s_cap_name_l, s_cap_name[0] ? s_cap_name : "No capture");
+    lv_obj_set_style_text_color(s_cap_name_l, lv_color_hex(s_cap_on ? C_TEXT : C_OFF_TEXT), 0);
+    /* Leave the slider alone while a finger is on it. */
+    if (!lv_obj_has_state(s_cap_slider, LV_STATE_PRESSED)) {
+        lv_slider_set_value(s_cap_slider, s_cap_volume < 0 ? CAP_VOL_ZERO : s_cap_volume, LV_ANIM_OFF);
+        capture_show_value(s_cap_volume);
+    }
+    bool w = capture_writable();
+    lv_obj_t *ctl[5] = { s_cap_slider, s_cap_steps[0], s_cap_steps[1], s_cap_steps[2], s_cap_steps[3] };
+    for (int i = 0; i < 5; i++) {
+        if (w) lv_obj_remove_state(ctl[i], LV_STATE_DISABLED);
+        else lv_obj_add_state(ctl[i], LV_STATE_DISABLED);
+        lv_obj_set_style_opa(ctl[i], w ? LV_OPA_COVER : LV_OPA_40, 0);
+    }
+}
+
+static void capture_set_volume(int raw)
+{
+    if (!capture_writable()) return;
+    raw = raw < 0 ? 0 : raw > 255 ? 255 : raw;
+    s_cap_volume = raw; /* optimistic; the next state dump confirms */
+    capture_refresh();
+    s_cb.on_capture_volume((uint8_t)raw);
+}
+
+static void on_capture_step(lv_event_t *e)
+{
+    int delta = (int)(intptr_t)lv_event_get_user_data(e);
+    capture_set_volume(s_cap_volume + delta);
+}
+
+static void on_capture_slider(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    int v = lv_slider_get_value(s_cap_slider);
+    if (code == LV_EVENT_VALUE_CHANGED) capture_show_value(v); /* follow the finger, write on release */
+    else if (code == LV_EVENT_RELEASED) capture_set_volume(v);
+}
+
+static lv_obj_t *capture_step_button(int32_t x, int32_t y, const char *text, int delta)
+{
+    lv_obj_t *b = make_button(s_capture_view, x, y, CAP_STEP_W, CAP_STEP_H, text, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_capture_step, (void *)(intptr_t)delta);
+    lv_obj_add_event_cb(b, on_pressed, LV_EVENT_PRESSED, NULL);
+    return b;
+}
+
+static void build_capture(lv_obj_t *scr)
+{
+    s_capture_view = make_overlay_cb(scr, "Capture", on_close, on_close, NULL);
+
+    /* Name with its on / off dot (up to two lines). */
+    s_cap_dot = make_dot(s_capture_view, 14, 44, 12);
+    s_cap_name_l = make_label(s_capture_view, &lv_font_montserrat_20, C_TEXT);
+    lv_obj_set_pos(s_cap_name_l, 34, 38);
+    lv_obj_set_width(s_cap_name_l, SCREEN_W - 34 - 12);
+    lv_label_set_long_mode(s_cap_name_l, LV_LABEL_LONG_WRAP);
+
+    /* Volume: value over the slider; -1 / -0.1 dB on the left, +0.1 / +1 dB on the right. */
+    s_cap_value = make_label(s_capture_view, &lv_font_montserrat_28, C_TEXT);
+    lv_obj_set_width(s_cap_value, SCREEN_W);
+    lv_obj_set_style_text_align(s_cap_value, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_cap_value, 0, 92);
+    const int32_t y1 = 134, y2 = y1 + CAP_STEP_H + 4;
+    const int32_t lx = 10, rx = SCREEN_W - 10 - CAP_STEP_W;
+    s_cap_steps[0] = capture_step_button(lx, y1, "-1 dB", -10);
+    s_cap_steps[1] = capture_step_button(lx, y2, "-0.1", -1);
+    s_cap_steps[2] = capture_step_button(rx, y1, "+1 dB", 10);
+    s_cap_steps[3] = capture_step_button(rx, y2, "+0.1", 1);
+    const int32_t sx = lx + CAP_STEP_W + 18, sw = rx - 18 - sx;
+    s_cap_slider = lv_slider_create(s_capture_view);
+    lv_slider_set_range(s_cap_slider, 0, 255);
+    lv_obj_set_size(s_cap_slider, sw, 10);
+    lv_obj_set_pos(s_cap_slider, sx, y1 + (y2 + CAP_STEP_H - y1) / 2 - 5);
+    lv_obj_set_ext_click_area(s_cap_slider, 20);
+    lv_obj_set_style_bg_color(s_cap_slider, lv_color_hex(C_PANEL_2), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_cap_slider, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_cap_slider, lv_color_hex(C_ON), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_cap_slider, lv_color_hex(C_TEXT), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s_cap_slider, 6, LV_PART_KNOB);
+    lv_obj_add_event_cb(s_cap_slider, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_RELEASED, NULL);
+
+    if (!s_cb.on_capture_volume) {
+        lv_obj_t *hint = make_label(s_capture_view, &lv_font_montserrat_12, C_MUTED);
+        lv_obj_set_width(hint, SCREEN_W);
+        lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(hint, 0, y2 + CAP_STEP_H + 4);
+        lv_label_set_text(hint, "Read-only for now");
+    }
+}
+
 static void build_tuner(lv_obj_t *scr)
 {
     s_tuner = make_overlay(scr, "Tuner", true);
@@ -1163,6 +1291,14 @@ static void show_view(nano_view_t view, bool notify)
         lv_obj_delete_async(s_presets);
         s_presets = NULL;
     }
+    if (view == NANO_VIEW_CAPTURE) {
+        build_capture(s_scr);
+        capture_refresh();
+        lv_obj_set_hidden(s_capture_view, false);
+    } else if (s_capture_view) {
+        lv_obj_delete_async(s_capture_view);
+        s_capture_view = NULL;
+    }
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
     lv_obj_set_hidden(s_tempo_view, view != NANO_VIEW_TEMPO);
     lv_obj_set_hidden(s_connect, view != NANO_VIEW_CONNECT);
@@ -1191,7 +1327,7 @@ void nano_ui_set_connected(bool live)
     s_base_view = live ? NANO_VIEW_MAIN : NANO_VIEW_CONNECT;
     if (live && s_view == NANO_VIEW_CONNECT) show_view(NANO_VIEW_MAIN, false);
     /* Down: the pedal's views make no claims any more; the menu and settings can stay open. */
-    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO)) show_view(NANO_VIEW_CONNECT, false);
+    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO || s_view == NANO_VIEW_CAPTURE)) show_view(NANO_VIEW_CONNECT, false);
 }
 
 void nano_ui_show(nano_view_t view)
@@ -1364,6 +1500,10 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
         layout_preset_row();
     }
     set_line(s_capture_dot, s_capture, st->capture_name, st->capture_on, "No capture");
+    snprintf(s_cap_name, sizeof(s_cap_name), "%s", st->capture_name);
+    s_cap_on = st->capture_on;
+    s_cap_volume = st->capture_volume;
+    capture_refresh();
     set_line(s_ir_dot, s_ir, st->ir_short_name, st->cab_on, "No IR");
     s_gate_on = st->gate_on;
     lv_obj_set_style_bg_color(s_gate, lv_color_hex(st->gate_on ? nano_category_color(NANO_CAT_UTILITY) : C_OFF), 0);

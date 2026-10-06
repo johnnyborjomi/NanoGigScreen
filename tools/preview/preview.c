@@ -270,6 +270,20 @@ int main(int argc, char **argv)
         nano_ui_set_state(&lng, &meta);
         render(200);
         save(dir, "9g-four-line-tile");
+        /* Capture page (read-only volume: the preview sets no on_capture_volume). */
+        lng.capture_volume = 144;
+        lng.capture_on = true;
+        nano_ui_set_state(&lng, &meta);
+        nano_ui_show(NANO_VIEW_CAPTURE);
+        render(200);
+        save(dir, "9h-capture-page");
+        lng.capture_on = false;
+        lng.capture_volume = 118;
+        strcpy(lng.capture_name, "CA John's Ch1 1");
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9i-capture-page-off");
+        nano_ui_show(NANO_VIEW_MAIN);
     }
 
     /* 10. firmware: settings page 3, then the update view in each state */
