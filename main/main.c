@@ -710,7 +710,7 @@ static void on_state(const nano_state_t *in)
     if (!s_state_valid || s_state.active_preset != st->active_preset) s_exp_assign_tries = 0;
     s_state = *st;
     s_state_valid = true;
-    ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\", IR \"%s\", %.0f BPM, fw %s", st->active_preset + 1, st->capture_name, st->ir_short_name, st->tempo_bpm, st->firmware);
+    ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\" vol %d (pedal %d), IR \"%s\", %.0f BPM, fw %s", st->active_preset + 1, st->capture_name, st->capture_volume, in->capture_volume, st->ir_short_name, st->tempo_bpm, st->firmware);
     if (lvgl_port_lock(100)) {
         nano_ui_set_state(st, s_meta_valid ? &s_meta_blob.meta : NULL);
         nano_ui_set_stale(false);

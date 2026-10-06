@@ -962,6 +962,7 @@ static void presets_open(void)
  */
 #define CAP_DRAG_MS 100
 #define CAP_HOLD_MS 1500
+#define CAP_JITTER 2       /* a resting finger wobbles ~1 px = 1 raw step on the resistive panel */
 #define CAP_STEP_W 62
 #define CAP_STEP_H 40
 #define CAP_STEP_GAP 6
@@ -972,6 +973,7 @@ static uint32_t s_cap_sent_ms;
 static uint32_t s_cap_local_ms;    /* last change made on this page */
 static bool s_cap_local;           /* a change was made (s_cap_local_ms is meaningful) */
 static int s_cap_preset = -1;      /* preset the shown volume belongs to */
+static int s_cap_drag_v;           /* slider value accepted during this press (moves by CAP_JITTER or more) */
 
 static bool capture_writable(void) { return s_cb.on_capture_volume != NULL && s_cap_volume >= 0; }
 
@@ -1054,19 +1056,30 @@ static void on_capture_step(lv_event_t *e)
     capture_set_volume(raw);
 }
 
+/* The slider follows the finger in moves of CAP_JITTER raw steps or more: a finger resting on it
+ * (fine-tuning, or just holding) no longer flickers +-0.1 dB. Release keeps the last accepted
+ * value, not the lift-off sample (which drifts on this panel). */
 static void on_capture_slider(lv_event_t *e)
 {
     if (!capture_writable()) return;
     lv_event_code_t code = lv_event_get_code(e);
     int v = lv_slider_get_value(s_cap_slider);
-    if (code == LV_EVENT_VALUE_CHANGED) {
+    if (code == LV_EVENT_PRESSED) {
+        s_cap_drag_v = s_cap_volume;
+    } else if (code == LV_EVENT_VALUE_CHANGED) {
+        if (abs(v - s_cap_drag_v) < CAP_JITTER) {
+            lv_slider_set_value(s_cap_slider, s_cap_drag_v, LV_ANIM_OFF);
+            return;
+        }
+        s_cap_drag_v = v;
         capture_show_value(v);
         s_cap_volume = v;
         s_cap_local = true;
         s_cap_local_ms = lv_tick_get();
         if (lv_tick_elaps(s_cap_sent_ms) >= CAP_DRAG_MS) capture_send(v);
     } else if (code == LV_EVENT_RELEASED) {
-        capture_set_volume(v); /* the final position, whatever the throttle skipped */
+        lv_slider_set_value(s_cap_slider, s_cap_drag_v, LV_ANIM_OFF);
+        capture_set_volume(s_cap_drag_v); /* the last accepted position, whatever the throttle skipped */
     }
 }
 
@@ -1105,6 +1118,7 @@ static void build_capture(lv_obj_t *scr)
     lv_obj_set_style_bg_color(s_cap_slider, lv_color_hex(C_TEXT), LV_PART_KNOB);
     lv_obj_set_style_pad_all(s_cap_slider, 6, LV_PART_KNOB);
     lv_obj_add_event_cb(s_cap_slider, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_RELEASED, NULL);
 
