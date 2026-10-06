@@ -954,7 +954,7 @@ static void presets_open(void)
 /*
  * Capture page: name, on / off dot, a full-width volume slider and under it one row of steps:
  * -1 dB, -0.1, (gap), +0.1, +1 dB, in Cortex Cloud's dB scale and readout (nano_capture_volume_tenths).
- * The slider writes while it is dragged (at most every CAP_DRAG_MS, like Cortex Cloud) and once more
+ * Double tap on the value resets to 0.0 dB. The slider writes while it is dragged (at most every CAP_DRAG_MS, like Cortex Cloud) and once more
  * on release. Read-only when on_capture_volume is unset.
  *
  * While the volume is being changed here the screen's value wins: state dumps arriving within
@@ -1105,6 +1105,15 @@ static void on_capture_slider(lv_event_t *e)
     }
 }
 
+/* Double tap on the value: back to 0.0 dB (raw 128). */
+static void on_capture_reset(lv_event_t *e)
+{
+    (void)e;
+    if (!capture_writable()) return;
+    s_cap_target_raw = -1; /* the next step starts from 0.0 */
+    capture_set_volume(128);
+}
+
 static lv_obj_t *capture_step_button(int32_t x, int32_t y, const char *text, int tenths)
 {
     lv_obj_t *b = make_button(s_capture_view, x, y, CAP_STEP_W, CAP_STEP_H, text, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_capture_step, (void *)(intptr_t)tenths);
@@ -1128,6 +1137,10 @@ static void build_capture(lv_obj_t *scr)
     lv_obj_set_width(s_cap_value, SCREEN_W);
     lv_obj_set_style_text_align(s_cap_value, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(s_cap_value, 0, 92);
+    lv_obj_set_clickable(s_cap_value, true);
+    lv_obj_set_ext_click_area(s_cap_value, 6);
+    lv_obj_add_event_cb(s_cap_value, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_cap_value, on_capture_reset, LV_EVENT_DOUBLE_CLICKED, NULL);
     const int32_t slider_y = 140, steps_y = 182;
     s_cap_slider = lv_slider_create(s_capture_view);
     lv_slider_set_range(s_cap_slider, 0, 255);
