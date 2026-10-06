@@ -146,6 +146,11 @@ uint8_t nano_capture_volume_raw(float db)
     return (uint8_t)lroundf(255.0f * powf(x, CAP_VOL_CURVE));
 }
 
+int nano_capture_volume_tenths(uint8_t raw)
+{
+    return (int)truncf(nano_capture_volume_db(raw) * 10.0f);
+}
+
 size_t nano_build_exp_assign_request(uint8_t *out, size_t cap, uint8_t preset_index)
 {
     if (cap < 10 || preset_index >= NANO_PRESET_COUNT) return 0;

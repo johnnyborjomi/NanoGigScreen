@@ -392,6 +392,10 @@ static void test_labels_and_models(void)
         CHECK(fabsf(nano_capture_volume_db(39) + 12.0f) < 0.05f);
         CHECK(fabsf(nano_capture_volume_db(102) + 2.9f) < 0.05f);
         CHECK(nano_capture_volume_db(0) == -24.0f && fabsf(nano_capture_volume_db(255) - 12.0f) < 0.001f);
+        /* Cortex Cloud's readout: 101 shows -3.0 (seen on the pedal 2026-10-07), 102 -2.9, 128 0.0, 39 -12.0. */
+        CHECK(nano_capture_volume_tenths(101) == -30 && nano_capture_volume_tenths(102) == -29);
+        CHECK(nano_capture_volume_tenths(128) == 0 && nano_capture_volume_tenths(39) == -120);
+        CHECK(nano_capture_volume_tenths(0) == -240 && nano_capture_volume_tenths(255) == 120);
     }
     nano_event_t ev;
     const uint8_t ack[] = { 0x08, 0xC0, 0x08, 0x01, 0x18, 0x01, 0x44, 0x00, 0x00, 0x00 };

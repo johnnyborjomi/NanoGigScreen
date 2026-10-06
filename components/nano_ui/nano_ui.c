@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nano_models.h"
@@ -951,14 +952,26 @@ static void presets_open(void)
 }
 
 /*
- * Capture page: name, on / off dot, volume slider with 1 dB and 0.1 dB steps either side, in Cortex
- * Cloud's dB scale (nano_capture_volume_db). The slider writes while it is dragged (at most every
- * CAP_DRAG_MS, like Cortex Cloud) and once more on release. Read-only when on_capture_volume is unset.
+ * Capture page: name, on / off dot, a full-width volume slider and under it one row of steps:
+ * -1 dB, -0.1, (gap), +0.1, +1 dB, in Cortex Cloud's dB scale and readout (nano_capture_volume_tenths).
+ * The slider writes while it is dragged (at most every CAP_DRAG_MS, like Cortex Cloud) and once more
+ * on release. Read-only when on_capture_volume is unset.
+ *
+ * While the volume is being changed here the screen's value wins: state dumps arriving within
+ * CAP_HOLD_MS of the last change (same preset) carry an older value and would make it jump back.
  */
-#define CAP_VOL_ZERO 128   /* 0.0 dB */
 #define CAP_DRAG_MS 100
-#define CAP_STEP_W 60
+#define CAP_HOLD_MS 1500
+#define CAP_STEP_W 62
 #define CAP_STEP_H 40
+#define CAP_STEP_GAP 6
+#define CAP_EDGE 16
+
+static int s_cap_sent = -1;        /* last value written (drag dedupe) */
+static uint32_t s_cap_sent_ms;
+static uint32_t s_cap_local_ms;    /* last change made on this page */
+static bool s_cap_local;           /* a change was made (s_cap_local_ms is meaningful) */
+static int s_cap_preset = -1;      /* preset the shown volume belongs to */
 
 static bool capture_writable(void) { return s_cb.on_capture_volume != NULL && s_cap_volume >= 0; }
 
@@ -968,9 +981,8 @@ static void capture_show_value(int raw)
     if (raw < 0) {
         snprintf(t, sizeof(t), "- dB");
     } else {
-        float db = nano_capture_volume_db((uint8_t)raw);
-        if (db > -0.05f && db < 0.05f) db = 0.0f; /* no "-0.0" */
-        snprintf(t, sizeof(t), "%+.1f dB", (double)db);
+        int tenths = nano_capture_volume_tenths((uint8_t)raw);
+        snprintf(t, sizeof(t), "%c%d.%d dB", tenths < 0 ? '-' : '+', abs(tenths) / 10, abs(tenths) % 10);
     }
     lv_label_set_text(s_cap_value, t);
 }
@@ -983,7 +995,7 @@ static void capture_refresh(void)
     lv_obj_set_style_text_color(s_cap_name_l, lv_color_hex(s_cap_on ? C_TEXT : C_OFF_TEXT), 0);
     /* Leave the slider alone while a finger is on it. */
     if (!lv_obj_has_state(s_cap_slider, LV_STATE_PRESSED)) {
-        lv_slider_set_value(s_cap_slider, s_cap_volume < 0 ? CAP_VOL_ZERO : s_cap_volume, LV_ANIM_OFF);
+        lv_slider_set_value(s_cap_slider, s_cap_volume < 0 ? 128 : s_cap_volume, LV_ANIM_OFF);
         capture_show_value(s_cap_volume);
     }
     bool w = capture_writable();
@@ -995,8 +1007,16 @@ static void capture_refresh(void)
     }
 }
 
-static int s_cap_sent = -1;        /* last value written (drag dedupe) */
-static uint32_t s_cap_sent_ms;
+/* A state dump's capture: the volume only when nothing was changed here a moment ago. */
+static void capture_from_state(const nano_state_t *st)
+{
+    snprintf(s_cap_name, sizeof(s_cap_name), "%s", st->capture_name);
+    s_cap_on = st->capture_on;
+    bool holding = s_cap_local && st->active_preset == s_cap_preset && lv_tick_elaps(s_cap_local_ms) < CAP_HOLD_MS;
+    if (!holding) s_cap_volume = st->capture_volume;
+    s_cap_preset = st->active_preset;
+    capture_refresh();
+}
 
 static void capture_send(int raw)
 {
@@ -1010,19 +1030,27 @@ static void capture_set_volume(int raw)
 {
     if (!capture_writable()) return;
     raw = raw < 0 ? 0 : raw > 255 ? 255 : raw;
-    s_cap_volume = raw; /* optimistic; the next state dump confirms */
+    s_cap_volume = raw;
+    s_cap_local = true;
+    s_cap_local_ms = lv_tick_get();
     capture_refresh();
     capture_send(raw);
 }
 
-/* +-1 dB / +-0.1 dB from the shown value; a step too small for the raw scale still moves one raw step. */
+/* Step the readout by `tenths`: the nearest raw value (in that direction) whose readout reaches the
+ * target, so -0.1 from -2.9 lands on -3.0 and -1 from -2.0 on -3.0, as Cortex Cloud reads them. */
 static void on_capture_step(lv_event_t *e)
 {
     if (!capture_writable()) return;
     int tenths = (int)(intptr_t)lv_event_get_user_data(e);
-    float shown = roundf(nano_capture_volume_db((uint8_t)s_cap_volume) * 10.0f) / 10.0f;
-    int raw = nano_capture_volume_raw(shown + tenths / 10.0f);
-    if (raw == s_cap_volume) raw += tenths > 0 ? 1 : -1;
+    int dir = tenths > 0 ? 1 : -1;
+    int target = nano_capture_volume_tenths((uint8_t)s_cap_volume) + tenths;
+    int raw = s_cap_volume;
+    while (raw + dir >= 0 && raw + dir <= 255) {
+        raw += dir;
+        int t = nano_capture_volume_tenths((uint8_t)raw);
+        if (dir > 0 ? t >= target : t <= target) break;
+    }
     capture_set_volume(raw);
 }
 
@@ -1034,15 +1062,17 @@ static void on_capture_slider(lv_event_t *e)
     if (code == LV_EVENT_VALUE_CHANGED) {
         capture_show_value(v);
         s_cap_volume = v;
+        s_cap_local = true;
+        s_cap_local_ms = lv_tick_get();
         if (lv_tick_elaps(s_cap_sent_ms) >= CAP_DRAG_MS) capture_send(v);
     } else if (code == LV_EVENT_RELEASED) {
         capture_set_volume(v); /* the final position, whatever the throttle skipped */
     }
 }
 
-static lv_obj_t *capture_step_button(int32_t x, int32_t y, const char *text, int delta)
+static lv_obj_t *capture_step_button(int32_t x, int32_t y, const char *text, int tenths)
 {
-    lv_obj_t *b = make_button(s_capture_view, x, y, CAP_STEP_W, CAP_STEP_H, text, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_capture_step, (void *)(intptr_t)delta);
+    lv_obj_t *b = make_button(s_capture_view, x, y, CAP_STEP_W, CAP_STEP_H, text, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_capture_step, (void *)(intptr_t)tenths);
     lv_obj_add_event_cb(b, on_pressed, LV_EVENT_PRESSED, NULL);
     return b;
 }
@@ -1058,24 +1088,17 @@ static void build_capture(lv_obj_t *scr)
     lv_obj_set_width(s_cap_name_l, SCREEN_W - 34 - 12);
     lv_label_set_long_mode(s_cap_name_l, LV_LABEL_LONG_WRAP);
 
-    /* Volume: value over the slider; -1 / -0.1 dB on the left, +0.1 / +1 dB on the right. */
+    /* Volume: the value, a full-width slider, then the steps a clear gap below it. */
     s_cap_value = make_label(s_capture_view, &lv_font_montserrat_28, C_TEXT);
     lv_obj_set_width(s_cap_value, SCREEN_W);
     lv_obj_set_style_text_align(s_cap_value, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(s_cap_value, 0, 92);
-    const int32_t y1 = 134, y2 = y1 + CAP_STEP_H + 4;
-    const int32_t lx = 10, rx = SCREEN_W - 10 - CAP_STEP_W;
-    s_cap_sent = -1;
-    s_cap_steps[0] = capture_step_button(lx, y1, "-1 dB", -10);
-    s_cap_steps[1] = capture_step_button(lx, y2, "-0.1", -1);
-    s_cap_steps[2] = capture_step_button(rx, y1, "+1 dB", 10);
-    s_cap_steps[3] = capture_step_button(rx, y2, "+0.1", 1);
-    const int32_t sx = lx + CAP_STEP_W + 18, sw = rx - 18 - sx;
+    const int32_t slider_y = 140, steps_y = 182;
     s_cap_slider = lv_slider_create(s_capture_view);
     lv_slider_set_range(s_cap_slider, 0, 255);
-    lv_obj_set_size(s_cap_slider, sw, 10);
-    lv_obj_set_pos(s_cap_slider, sx, y1 + (y2 + CAP_STEP_H - y1) / 2 - 5);
-    lv_obj_set_ext_click_area(s_cap_slider, 20);
+    lv_obj_set_size(s_cap_slider, SCREEN_W - 2 * CAP_EDGE - 8, 10);
+    lv_obj_set_pos(s_cap_slider, CAP_EDGE + 4, slider_y);
+    lv_obj_set_ext_click_area(s_cap_slider, 10); /* stops ~20 px above the steps */
     lv_obj_set_style_bg_color(s_cap_slider, lv_color_hex(C_PANEL_2), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_cap_slider, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_cap_slider, lv_color_hex(C_ON), LV_PART_INDICATOR);
@@ -1085,11 +1108,18 @@ static void build_capture(lv_obj_t *scr)
     lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_cap_slider, on_capture_slider, LV_EVENT_RELEASED, NULL);
 
+    s_cap_sent = -1;
+    const int32_t right = SCREEN_W - CAP_EDGE;
+    s_cap_steps[0] = capture_step_button(CAP_EDGE, steps_y, "-1 dB", -10);
+    s_cap_steps[1] = capture_step_button(CAP_EDGE + CAP_STEP_W + CAP_STEP_GAP, steps_y, "-0.1", -1);
+    s_cap_steps[2] = capture_step_button(right - 2 * CAP_STEP_W - CAP_STEP_GAP, steps_y, "+0.1", 1);
+    s_cap_steps[3] = capture_step_button(right - CAP_STEP_W, steps_y, "+1 dB", 10);
+
     if (!s_cb.on_capture_volume) {
         lv_obj_t *hint = make_label(s_capture_view, &lv_font_montserrat_12, C_MUTED);
         lv_obj_set_width(hint, SCREEN_W);
         lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_pos(hint, 0, y2 + CAP_STEP_H + 4);
+        lv_obj_set_pos(hint, 0, steps_y + CAP_STEP_H + 4);
         lv_label_set_text(hint, "Read-only for now");
     }
 }
@@ -1530,10 +1560,7 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
         layout_preset_row();
     }
     set_line(s_capture_dot, s_capture, st->capture_name, st->capture_on, "No capture");
-    snprintf(s_cap_name, sizeof(s_cap_name), "%s", st->capture_name);
-    s_cap_on = st->capture_on;
-    s_cap_volume = st->capture_volume;
-    capture_refresh();
+    capture_from_state(st);
     set_line(s_ir_dot, s_ir, st->ir_short_name, st->cab_on, "No IR");
     s_gate_on = st->gate_on;
     lv_obj_set_style_bg_color(s_gate, lv_color_hex(st->gate_on ? nano_category_color(NANO_CAT_UTILITY) : C_OFF), 0);
