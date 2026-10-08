@@ -132,10 +132,12 @@ int nano_capture_volume_tenths(uint8_t raw);
 /*
  * Rename a preset (the pedal's RenamePreset, frame from DrD85/nano-cortex-controller, verified on the
  * user's pedal 2026-10-08): `<len> C0 08 01 18 <preset> 22 <n> <name> 6F 00 00 00`. The pedal stores the
- * name at once (no save needed) and answers type 0x70 `08 06 18 <preset> 20 <1 = ok>`.
+ * name at once (no save needed) and answers type 0x70 `08 06 18 <preset> 20 <1 = ok>`. The pedal itself
+ * checks nothing (2026-10-08: it took "", 3 characters, duplicates, spaces at the ends, 32 characters,
+ * UTF-8), so the app keeps DrD85's rules: 4 to 32 characters, no duplicates; 31 here = the name cache.
  * Returns bytes written, or 0 for an empty name, one longer than NANO_PRESET_NAME_MAX or a bad index.
  */
-#define NANO_PRESET_NAME_MAX 20
+#define NANO_PRESET_NAME_MAX 31
 size_t nano_build_preset_rename(uint8_t *out, size_t cap, uint8_t preset_index, const char *name);
 
 /*

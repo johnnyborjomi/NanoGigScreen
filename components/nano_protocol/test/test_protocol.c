@@ -378,8 +378,9 @@ static void test_labels_and_models(void)
         CHECK(nano_build_preset_rename(f, sizeof(f), 44, "Gojira T") == sizeof(gt) && memcmp(f, gt, sizeof(gt)) == 0);
         CHECK(nano_build_preset_rename(f, sizeof(f), 44, "") == 0);
         CHECK(nano_build_preset_rename(f, sizeof(f), 64, "Name") == 0);
-        CHECK(nano_build_preset_rename(f, sizeof(f), 0, "123456789012345678901") == 0); /* 21 > NANO_PRESET_NAME_MAX */
-        CHECK(nano_build_preset_rename(f, sizeof(f), 0, "12345678901234567890") == 32);
+        uint8_t big[64];
+        CHECK(nano_build_preset_rename(big, sizeof(big), 0, "12345678901234567890123456789012") == 0); /* 32 > NANO_PRESET_NAME_MAX */
+        CHECK(nano_build_preset_rename(big, sizeof(big), 0, "1234567890123456789012345678901") == 43);
         CHECK(nano_build_preset_rename(f, 19, 44, "Gojira T") == 0);
         /* The pedal's reply. */
         const uint8_t ok[] = { 0x0A, 0xC0, 0x08, 0x06, 0x18, 0x2C, 0x20, 0x01, 0x70, 0x00, 0x00, 0x00 };

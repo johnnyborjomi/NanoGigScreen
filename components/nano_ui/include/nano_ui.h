@@ -57,7 +57,7 @@ typedef struct {
     void (*on_next_preset)(void);
     /* A preset was picked in the presets list (0..63). */
     void (*on_select_preset)(uint8_t index);
-    /* Rename page: write `name` (1..NANO_PRESET_NAME_MAX chars) to preset `index` (0..63); answer with
+    /* Rename page: write `name` (4..NANO_PRESET_NAME_MAX chars) to preset `index` (0..63); answer with
      * nano_ui_rename_result. NULL = no long press opens the page. */
     void (*on_rename_preset)(uint8_t index, const char *name);
     /* Capture page: new capture volume, raw 0..255. NULL = the page shows the volume read-only. */

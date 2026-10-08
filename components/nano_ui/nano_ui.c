@@ -989,8 +989,8 @@ static void build_capture(lv_obj_t *scr)
  */
 static void on_rename_back(lv_event_t *e) { (void)e; nano_ui_show(s_rename_from); }
 
-/* No two presets with the same name, ignoring letter case (DrD85's controller enforces this; the
- * pedal's own rule is still to be checked), and no space at either end. */
+/* The pedal accepts any name; like DrD85's controller, no two presets share one (ignoring letter case).
+ * Spaces at either end would be invisible on the screen. */
 static bool rename_validate(const char *text, char *why, size_t cap, void *user)
 {
     (void)user;
@@ -1027,7 +1027,7 @@ static void build_rename(lv_obj_t *scr)
     const ui_text_edit_cfg_t cfg = {
         .text = s_meta ? s_meta->presets[s_rename_idx].name : "",
         .placeholder = "Preset name",
-        .min_len = 1, .max_len = NANO_PRESET_NAME_MAX,
+        .min_len = 4, .max_len = NANO_PRESET_NAME_MAX,
         .validate = rename_validate,
         .on_submit = rename_submit,
     };
