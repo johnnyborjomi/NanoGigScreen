@@ -138,6 +138,8 @@ bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out)
     out->gate_on = nano_first_varint(d, plen, 54, 0) == 0;
     out->cab_on = nano_has_field(d, plen, 12);
     out->capture_on = nano_first_varint(d, plen, 11, 0) > 0;
+    int64_t vol = nano_first_varint(d, plen, 44, -1);
+    out->capture_volume = vol < 0 ? -1 : vol > 255 ? 255 : (int16_t)vol;
     for (uint32_t i = 0; i < NANO_FX_SLOT_COUNT; i++) model_id_hex(d, plen, 48 + i, &out->fx[i]);
 
     /* Zero-valued varints are omitted (proto3 defaults): absent field 13 = preset 1. */

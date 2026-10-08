@@ -111,6 +111,24 @@ size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mu
 size_t nano_build_outputs_mute(uint8_t *out, size_t cap, bool mute);
 
 /*
+ * Neural capture volume (Cortex Cloud's capture volume slider, captured 2026-10-07 from an Android HCI
+ * snoop log): `0A C0 18 0A 20 <raw varint> 28 00 1A 00 00 00`, 0B and a two-byte varint from 128 up.
+ * Raw 0..255 = -24..+12 dB on a curve (see nano_capture_volume_db); state field 44 carries it back.
+ * A live edit: it changes the sound, it does not save the preset. Returns 12 or 13.
+ */
+size_t nano_build_capture_volume(uint8_t *out, size_t cap, uint8_t raw);
+/*
+ * Cortex Cloud's capture volume scale, fitted to five readings (2026-10-07: 0 = -24, 39 = -12.0,
+ * 102 = -2.9, 128 = 0.0, 255 = +12 dB): raw = 255 * ((dB + 24) / 36)^1.708, each within 0.05 dB.
+ */
+float nano_capture_volume_db(uint8_t raw);
+uint8_t nano_capture_volume_raw(float db);
+/* What Cortex Cloud shows for `raw`, in tenths of a dB: the value cut toward zero, not rounded
+ * (raw 101 = -3.07 dB reads "-3.0" there; all five readings above agree), with 0.01 dB of slack
+ * for the fit at the boundaries (raw 110 = -1.995 reads -2.0, not -1.9). */
+int nano_capture_volume_tenths(uint8_t raw);
+
+/*
  * Read a preset's expression pedal assignments (Cortex Cloud's request on its Expression Pedal
  * page, captured 2026-09-19): `08 C0 08 03 18 <preset> 3C 00 00 00`. The reply is type 0x3D and
  * carries no preset number: remember which one was asked for.

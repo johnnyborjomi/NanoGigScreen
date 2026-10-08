@@ -54,6 +54,7 @@ typedef struct {
     bool cab_on;                       /* field 12 present */
     bool capture_on;                   /* field 11 > 0 (position in the bank; 0 / absent = bypassed) */
     char capture_name[NANO_NAME_CAP];
+    int16_t capture_volume;            /* field 44, raw 0..255 (127 = the default level); -1 when absent */
     char ir_short_name[NANO_NAME_CAP];
     nano_fx_slot_t fx[NANO_FX_SLOT_COUNT];
     uint8_t active_preset;             /* field 13; absent = 0 = preset 1 */

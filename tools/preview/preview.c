@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8 };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8 };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -270,6 +270,20 @@ int main(int argc, char **argv)
         nano_ui_set_state(&lng, &meta);
         render(200);
         save(dir, "9g-four-line-tile");
+        /* Capture page: 144 = +2.1 dB, 102 = -2.9 dB. */
+        lng.capture_volume = 144;
+        lng.capture_on = true;
+        nano_ui_set_state(&lng, &meta);
+        nano_ui_show(NANO_VIEW_CAPTURE);
+        render(200);
+        save(dir, "9h-capture-page");
+        lng.capture_on = false;
+        lng.capture_volume = 102;
+        strcpy(lng.capture_name, "CA John's Ch1 1");
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9i-capture-page-off");
+        nano_ui_show(NANO_VIEW_MAIN);
     }
 
     /* 10. firmware: settings page 3, then the update view in each state */

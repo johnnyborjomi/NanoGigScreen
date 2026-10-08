@@ -5,7 +5,7 @@
  * Main view: top bar (link status, tempo, gate, menu button), preset row
  * (prev button, bank label + name, next button), capture and IR lines, five
  * FX tiles in category colours. Tap a tile to toggle that block. LIST (right of
- * the capture / IR lines) opens the presets list.
+ * the capture / IR lines) opens the presets list; the capture line opens the capture page.
  *
  * Every call must hold the LVGL lock (lvgl_port_lock) except nano_ui_create,
  * which the caller also wraps. Callbacks fire on the LVGL task: post to a
@@ -32,6 +32,7 @@ typedef enum {
     NANO_VIEW_CONNECT,     /* no live state: "put the pedal in connect mode" / Connect button */
     NANO_VIEW_UPDATE,      /* firmware update over Wi-Fi (Bluetooth is off while it shows; closing restarts) */
     NANO_VIEW_PRESETS,     /* presets list, one bank per page: tap one to select it */
+    NANO_VIEW_CAPTURE,     /* the capture: name, on / off, volume (tap the capture line) */
 } nano_view_t;
 
 /* What the firmware update view shows under the Wi-Fi line. */
@@ -55,6 +56,8 @@ typedef struct {
     void (*on_next_preset)(void);
     /* A preset was picked in the presets list (0..63). */
     void (*on_select_preset)(uint8_t index);
+    /* Capture page: new capture volume, raw 0..255. NULL = the page shows the volume read-only. */
+    void (*on_capture_volume)(uint8_t raw);
     /* A tile was tapped: slot 0..4 = pre1..post3, `on` = its state as shown. */
     void (*on_toggle_fx)(uint8_t slot, bool on);
     /* The GATE button was tapped; `on` = its state as shown. */

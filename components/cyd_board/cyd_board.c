@@ -8,6 +8,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_touch_xpt2046.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "sdkconfig.h"
@@ -183,9 +184,42 @@ static esp_err_t init_panel(esp_lcd_panel_io_handle_t *io_out, esp_lcd_panel_han
 #define TOUCH_RAW_DOWN_MIN 35     /* driver x: top edge */
 #define TOUCH_RAW_DOWN_MAX 287    /* driver x: bottom edge */
 
+/*
+ * Touch filter, two stages, per press:
+ * 1. Median of the last three samples per axis: drops single wild samples, above all the one or two
+ *    the resistive glass gives as the finger lifts (pressure falling), which a slider took as a jump
+ *    of 8-20 dB in the last 60 ms of a drag (board log 2026-10-08). Costs one sample (~30 ms) of lag.
+ * 2. Jitter window: a resting finger still wobbles +-2 px; the reported point moves only once the
+ *    median leaves a +-TOUCH_JITTER_PX window, then follows TOUCH_JITTER_PX behind (drags stay smooth).
+ * The hook is not called while nothing touches, so a gap of TOUCH_NEW_PRESS_US starts a fresh press.
+ */
+#define TOUCH_JITTER_PX 2
+#define TOUCH_NEW_PRESS_US 100000
+
+static int32_t median3(int32_t a, int32_t b, int32_t c)
+{
+    if (a > b) { int32_t t = a; a = b; b = t; }
+    if (b > c) b = c;
+    return a > b ? a : b;
+}
+
+static int32_t touch_follow(int32_t stable, int32_t raw)
+{
+    int32_t d = raw - stable;
+    if (d > TOUCH_JITTER_PX) return raw - TOUCH_JITTER_PX;
+    if (d < -TOUCH_JITTER_PX) return raw + TOUCH_JITTER_PX;
+    return stable;
+}
+
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y, uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
 {
     (void)tp; (void)strength; (void)max_point_num;
+    static int32_t s_fx, s_fy;
+    static int32_t s_hx[2], s_hy[2]; /* the two samples before this one */
+    static int64_t s_last_us;
+    int64_t now = esp_timer_get_time();
+    bool fresh = now - s_last_us > TOUCH_NEW_PRESS_US;
+    s_last_us = now;
     for (uint8_t i = 0; i < *point_num; i++) {
         int32_t across = (int32_t)y[i];
         int32_t down = (int32_t)x[i];
@@ -194,6 +228,22 @@ static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
         sx = sx < 0 ? 0 : sx >= CYD_H_RES ? CYD_H_RES - 1 : sx;
         sy = sy < 0 ? 0 : sy >= CYD_V_RES ? CYD_V_RES - 1 : sy;
         if (s_rot180) { sx = CYD_H_RES - 1 - sx; sy = CYD_V_RES - 1 - sy; } /* the glass turned with the panel */
+        if (i == 0) {
+            if (fresh) {
+                s_hx[0] = s_hx[1] = sx;
+                s_hy[0] = s_hy[1] = sy;
+                s_fx = sx;
+                s_fy = sy;
+            } else {
+                int32_t mx = median3(s_hx[0], s_hx[1], sx), my = median3(s_hy[0], s_hy[1], sy);
+                s_hx[0] = s_hx[1]; s_hx[1] = sx;
+                s_hy[0] = s_hy[1]; s_hy[1] = sy;
+                s_fx = touch_follow(s_fx, mx);
+                s_fy = touch_follow(s_fy, my);
+            }
+            sx = s_fx;
+            sy = s_fy;
+        }
         x[i] = (uint16_t)sx;
         y[i] = (uint16_t)sy;
     }
