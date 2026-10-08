@@ -54,6 +54,58 @@ void ui_on_pressed(lv_event_t *e)
     printf("touch press x=%d y=%d\n", (int)p.x, (int)p.y);
 }
 
+/* The caret: LVGL 9.6 draws no border on a text area's cursor part, so a thin bar of our own sits
+ * between the letters, moved after every change and blinking every 500 ms. */
+typedef struct {
+    lv_obj_t *bar;
+    lv_timer_t *timer;
+    bool on;
+} caret_t;
+
+static void caret_place(lv_obj_t *ta)
+{
+    caret_t *c = lv_obj_get_user_data(ta);
+    if (!c) return;
+    lv_obj_t *label = lv_textarea_get_label(ta);
+    lv_obj_update_layout(ta);
+    lv_point_t p;
+    lv_label_get_letter_pos(label, lv_textarea_get_cursor_pos(ta), &p);
+    lv_obj_set_pos(c->bar, lv_obj_get_x(label) + p.x - 1, lv_obj_get_y(label) + p.y);
+}
+
+static void caret_blink(lv_timer_t *t)
+{
+    lv_obj_t *ta = lv_timer_get_user_data(t);
+    caret_t *c = lv_obj_get_user_data(ta);
+    c->on = !c->on;
+    caret_place(ta); /* also catches the password dots replacing a just-typed letter */
+    lv_obj_set_hidden(c->bar, !c->on);
+}
+
+/* After a change or a move: show it at once and start the blink over. */
+static void caret_touch(lv_obj_t *ta)
+{
+    caret_t *c = lv_obj_get_user_data(ta);
+    if (!c) return;
+    caret_place(ta);
+    c->on = true;
+    lv_obj_set_hidden(c->bar, false);
+    lv_timer_reset(c->timer);
+}
+
+static void on_field_event(lv_event_t *e)
+{
+    lv_obj_t *ta = lv_event_get_target_obj(e);
+    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+        caret_t *c = lv_obj_get_user_data(ta);
+        lv_timer_delete(c->timer);
+        lv_free(c);
+        lv_obj_set_user_data(ta, NULL);
+        return;
+    }
+    caret_touch(ta);
+}
+
 lv_obj_t *ui_text_field(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, const lv_font_t *font)
 {
     lv_obj_t *ta = lv_textarea_create(parent);
@@ -64,12 +116,22 @@ lv_obj_t *ui_text_field(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32
     lv_obj_set_style_border_color(ta, lv_color_hex(C_ACCENT), 0);
     lv_obj_set_style_text_color(ta, lv_color_hex(C_TEXT), 0);
     lv_obj_set_style_text_font(ta, font, 0);
-    /* The cursor: a half-transparent accent block over the character the next one goes in front of,
-     * blinking every 500 ms (LVGL 9.6 draws no border on the cursor part, so no thin bar). */
-    lv_obj_set_style_bg_color(ta, lv_color_hex(C_ACCENT), LV_PART_CURSOR);
-    lv_obj_set_style_bg_opa(ta, LV_OPA_50, LV_PART_CURSOR);
-    lv_obj_set_style_anim_duration(ta, 500, LV_PART_CURSOR);
+    lv_obj_set_style_anim_duration(ta, 0, LV_PART_CURSOR | LV_STATE_FOCUSED); /* LVGL's own cursor: off */
+    lv_obj_set_style_border_width(ta, 0, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_opa(ta, LV_OPA_TRANSP, LV_PART_CURSOR | LV_STATE_FOCUSED);
     lv_obj_add_state(ta, LV_STATE_FOCUSED);
+
+    caret_t *c = lv_malloc(sizeof(*c));
+    if (c) {
+        c->bar = ui_box(ta, 0, 0, 2, lv_font_get_line_height(font), C_ACCENT);
+        lv_obj_set_clickable(c->bar, false);
+        c->on = true;
+        c->timer = lv_timer_create(caret_blink, 500, ta);
+        lv_obj_set_user_data(ta, c);
+        lv_obj_add_event_cb(ta, on_field_event, LV_EVENT_VALUE_CHANGED, NULL);
+        lv_obj_add_event_cb(ta, on_field_event, LV_EVENT_RELEASED, NULL); /* a tap in the field moves the cursor */
+        lv_obj_add_event_cb(ta, on_field_event, LV_EVENT_DELETE, NULL);
+    }
     return ta;
 }
 
@@ -120,6 +182,8 @@ static void on_keyboard_key(lv_event_t *e)
     if (txt && strcmp(txt, KB_MODE_SYMBOLS2) == 0) lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_USER_1);
     else if (txt && strcmp(txt, KB_MODE_SYMBOLS1) == 0) lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_SPECIAL);
     else lv_keyboard_def_event_cb(e);
+    lv_obj_t *ta = lv_keyboard_get_textarea(kb);
+    if (ta) caret_touch(ta);
 }
 
 lv_obj_t *ui_keyboard(lv_obj_t *parent, int32_t h, lv_obj_t *ta)

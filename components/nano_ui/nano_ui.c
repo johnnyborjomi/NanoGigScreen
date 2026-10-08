@@ -118,7 +118,7 @@ static char s_fw_version[32] = "unknown";
 static char s_wifi_ssid[33];
 static lv_obj_t *s_fw_value;
 static lv_obj_t *s_upd_main, *s_upd_version, *s_upd_wifi, *s_upd_text, *s_upd_sub, *s_upd_bar, *s_upd_action, *s_upd_close;
-static lv_obj_t *s_upd_nets, *s_upd_net_list, *s_upd_net_cancel;
+static lv_obj_t *s_upd_nets, *s_upd_net_list, *s_upd_back, *s_upd_title;
 static lv_obj_t *s_upd_pass, *s_upd_pass_title, *s_upd_pass_ta, *s_upd_kb;
 static nano_update_state_t s_upd_state = NANO_UPDATE_BUSY;
 static nano_ui_network_t s_upd_networks[10];
@@ -1602,8 +1602,20 @@ void nano_ui_set_tuner(const char *note, float cents, bool in_tune)
 
 typedef enum { UPD_PANEL_MAIN, UPD_PANEL_NETWORKS, UPD_PANEL_PASSWORD } upd_panel_t;
 
+static upd_panel_t s_upd_panel = UPD_PANEL_MAIN;
+
+/* The header "<": password -> networks, networks -> the update (only with a network to go back to). */
+static void upd_refresh_back(void)
+{
+    bool back = s_upd_panel == UPD_PANEL_PASSWORD || (s_upd_panel == UPD_PANEL_NETWORKS && s_wifi_ssid[0]);
+    lv_obj_set_hidden(s_upd_back, !back);
+    lv_obj_set_x(s_upd_title, back ? 40 : 12);
+}
+
 static void upd_show_panel(upd_panel_t p)
 {
+    s_upd_panel = p;
+    upd_refresh_back();
     lv_obj_set_hidden(s_upd_main, p != UPD_PANEL_MAIN);
     lv_obj_set_hidden(s_upd_nets, p != UPD_PANEL_NETWORKS);
     lv_obj_set_hidden(s_upd_pass, p != UPD_PANEL_PASSWORD);
@@ -1613,7 +1625,7 @@ static void upd_refresh_wifi(void)
 {
     lv_label_set_text(s_upd_wifi, s_wifi_ssid[0] ? s_wifi_ssid : "Not set up");
     lv_obj_set_style_text_color(s_upd_wifi, lv_color_hex(s_wifi_ssid[0] ? C_TEXT : C_MUTED), 0);
-    lv_obj_set_hidden(s_upd_net_cancel, !s_wifi_ssid[0]);
+    upd_refresh_back();
 }
 
 static void upd_start_join(const char *ssid, const char *password)
@@ -1637,7 +1649,11 @@ static void on_upd_change_wifi(lv_event_t *e)
     if (s_cb.on_wifi_scan) s_cb.on_wifi_scan();
 }
 
-static void on_upd_cancel_networks(lv_event_t *e) { (void)e; upd_show_panel(UPD_PANEL_MAIN); }
+static void on_upd_back(lv_event_t *e)
+{
+    (void)e;
+    upd_show_panel(s_upd_panel == UPD_PANEL_PASSWORD ? UPD_PANEL_NETWORKS : UPD_PANEL_MAIN);
+}
 
 static void on_upd_action(lv_event_t *e)
 {
@@ -1687,7 +1703,7 @@ static void on_upd_keyboard(lv_event_t *e)
     }
 }
 
-static void on_upd_pass_back(lv_event_t *e) { (void)e; upd_show_panel(UPD_PANEL_NETWORKS); }
+
 
 /* Four bars, lit by signal strength. */
 static void make_bars(lv_obj_t *parent, int32_t x, int32_t y, int8_t rssi)
@@ -1702,7 +1718,9 @@ static void make_bars(lv_obj_t *parent, int32_t x, int32_t y, int8_t rssi)
 
 static void build_update(lv_obj_t *scr)
 {
-    s_update = make_overlay_cb(scr, "Firmware update", NULL, on_upd_close, &s_upd_close);
+    s_update = make_overlay_cb(scr, "Firmware update", on_upd_back, on_upd_close, &s_upd_close);
+    s_upd_back = lv_obj_get_child(s_update, 0);  /* make_overlay_cb: back, title, close */
+    s_upd_title = lv_obj_get_child(s_update, 1);
     const int32_t top = TOP_H + 4;
 
     /* Main panel: installed version, Wi-Fi line, status, action. */
@@ -1759,23 +1777,18 @@ static void build_update(lv_obj_t *scr)
     lv_obj_t *rescan = ui_button(s_upd_nets, SCREEN_W - UPD_X - 76, 2, 76, 28, LV_SYMBOL_REFRESH " Scan", &lv_font_montserrat_12, C_PANEL, C_ACCENT, on_upd_change_wifi, NULL);
     lv_obj_set_style_radius(rescan, 7, 0);
     lv_obj_add_event_cb(rescan, ui_on_pressed, LV_EVENT_PRESSED, NULL);
-    s_upd_net_cancel = ui_button(s_upd_nets, SCREEN_W - UPD_X - 76 - 6 - 70, 2, 70, 28, "Cancel", &lv_font_montserrat_12, C_PANEL, C_MUTED, on_upd_cancel_networks, NULL);
-    lv_obj_set_style_radius(s_upd_net_cancel, 7, 0);
-    lv_obj_add_event_cb(s_upd_net_cancel, ui_on_pressed, LV_EVENT_PRESSED, NULL);
     s_upd_net_list = ui_box(s_upd_nets, UPD_X, 36, UPD_W, SCREEN_H - top - 40, C_BG);
     lv_obj_set_scrollable(s_upd_net_list, true);
     lv_obj_set_scroll_dir(s_upd_net_list, LV_DIR_VER);
     lv_obj_set_flex_flow(s_upd_net_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_upd_net_list, 4, 0);
 
-    /* Password: field + show/hide, keyboard under it (OK joins, "< Networks" goes back). */
+    /* Password: field + show/hide, keyboard under it (OK joins, the header "<" goes back). */
     s_upd_pass = ui_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
     s_upd_pass_title = ui_label(s_upd_pass, &lv_font_montserrat_12, C_MUTED);
     lv_obj_set_pos(s_upd_pass_title, UPD_X, 2);
-    lv_obj_set_size(s_upd_pass_title, UPD_W - 96, lv_font_get_line_height(&lv_font_montserrat_12));
+    lv_obj_set_size(s_upd_pass_title, UPD_W, lv_font_get_line_height(&lv_font_montserrat_12));
     lv_label_set_long_mode(s_upd_pass_title, LV_LABEL_LONG_DOT);
-    lv_obj_t *pass_back = ui_button(s_upd_pass, SCREEN_W - UPD_X - 90, 0, 90, 18, LV_SYMBOL_LEFT " Networks", &lv_font_montserrat_12, C_BG, C_ACCENT, on_upd_pass_back, NULL);
-    lv_obj_set_ext_click_area(pass_back, 4);
     s_upd_pass_ta = ui_text_field(s_upd_pass, UPD_X, 20, UPD_W - 48, UPD_PASS_TA_H, &lv_font_montserrat_14);
     lv_textarea_set_password_mode(s_upd_pass_ta, true);
     lv_textarea_set_max_length(s_upd_pass_ta, 63);
@@ -1859,7 +1872,8 @@ void nano_ui_update_status(nano_update_state_t state, const char *text, int perc
     }
     /* Closing restarts the screen: not while the new image is being written or activated. */
     lv_obj_set_hidden(s_upd_close, state == NANO_UPDATE_DOWNLOADING || state == NANO_UPDATE_DONE);
-    upd_show_panel(UPD_PANEL_MAIN);
+    /* A check that was already running reports here while the user picks a network: it updates the
+     * main panel behind the list instead of pulling the list away (the "Change" flicker). */
 }
 
 void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, bool scanning)
@@ -1890,5 +1904,5 @@ void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, 
         }
         make_bars(row, UPD_W - 28, (UPD_ROW_H - 13) / 2, n->rssi);
     }
-    upd_show_panel(UPD_PANEL_NETWORKS);
+    if (s_upd_panel != UPD_PANEL_PASSWORD) upd_show_panel(UPD_PANEL_NETWORKS); /* never from under the typing */
 }
