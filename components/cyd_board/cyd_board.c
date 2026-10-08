@@ -8,6 +8,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_touch_xpt2046.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "sdkconfig.h"
@@ -183,9 +184,32 @@ static esp_err_t init_panel(esp_lcd_panel_io_handle_t *io_out, esp_lcd_panel_han
 #define TOUCH_RAW_DOWN_MIN 35     /* driver x: top edge */
 #define TOUCH_RAW_DOWN_MAX 287    /* driver x: bottom edge */
 
+/*
+ * Jitter filter: a finger resting on the resistive glass wobbles +-2 px between samples even after
+ * the driver's 5-sample average, which a slider shows as a value flickering by a step. While the
+ * finger stays down, the reported point only moves once the reading leaves a +-TOUCH_JITTER_PX
+ * window around it, and then follows TOUCH_JITTER_PX behind (drags stay smooth). The hook is not
+ * called while nothing touches, so a gap of TOUCH_NEW_PRESS_US starts a fresh press.
+ */
+#define TOUCH_JITTER_PX 2
+#define TOUCH_NEW_PRESS_US 100000
+
+static int32_t touch_follow(int32_t stable, int32_t raw)
+{
+    int32_t d = raw - stable;
+    if (d > TOUCH_JITTER_PX) return raw - TOUCH_JITTER_PX;
+    if (d < -TOUCH_JITTER_PX) return raw + TOUCH_JITTER_PX;
+    return stable;
+}
+
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y, uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
 {
     (void)tp; (void)strength; (void)max_point_num;
+    static int32_t s_fx, s_fy;
+    static int64_t s_last_us;
+    int64_t now = esp_timer_get_time();
+    bool fresh = now - s_last_us > TOUCH_NEW_PRESS_US;
+    s_last_us = now;
     for (uint8_t i = 0; i < *point_num; i++) {
         int32_t across = (int32_t)y[i];
         int32_t down = (int32_t)x[i];
@@ -194,6 +218,12 @@ static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
         sx = sx < 0 ? 0 : sx >= CYD_H_RES ? CYD_H_RES - 1 : sx;
         sy = sy < 0 ? 0 : sy >= CYD_V_RES ? CYD_V_RES - 1 : sy;
         if (s_rot180) { sx = CYD_H_RES - 1 - sx; sy = CYD_V_RES - 1 - sy; } /* the glass turned with the panel */
+        if (i == 0) {
+            if (fresh) { s_fx = sx; s_fy = sy; }
+            else { s_fx = touch_follow(s_fx, sx); s_fy = touch_follow(s_fy, sy); }
+            sx = s_fx;
+            sy = s_fy;
+        }
         x[i] = (uint16_t)sx;
         y[i] = (uint16_t)sy;
     }

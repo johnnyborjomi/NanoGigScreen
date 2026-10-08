@@ -962,10 +962,11 @@ static void presets_open(void)
  */
 #define CAP_DRAG_MS 100
 #define CAP_HOLD_MS 1500
-/* A finger resting on the slider wobbles +-2 raw steps on the resistive panel: a move that turns
- * back needs CAP_TURN steps, one that carries on in the same direction CAP_MOVE. */
-#define CAP_MOVE 2
-#define CAP_TURN 5
+/* The touch driver already holds a resting finger still (cyd_board's jitter filter); what is left
+ * is the odd one-pixel step: a move that turns back needs CAP_TURN raw steps, one that carries on
+ * in the same direction CAP_MOVE. */
+#define CAP_MOVE 1
+#define CAP_TURN 3
 #define CAP_STEP_W 62
 #define CAP_STEP_H 40
 #define CAP_STEP_GAP 6
