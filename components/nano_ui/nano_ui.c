@@ -179,7 +179,7 @@ static const lv_font_t *tile_font(const char *text, int32_t max_w)
     return &montserrat_medium_12;
 }
 
-/* ---- pager: a left column with up / down buttons and a rotated "Page n/m" ----
+/* ---- pager: a left column with up / down buttons and "Page" over "n/m" between them ----
  * Pages are either child boxes shown one at a time (pager_add_page) or virtual: a count and an
  * on_show callback that refills one box (pager_set_count, the presets list). */
 
@@ -208,11 +208,11 @@ static void pager_show(pager_t *p, int idx)
     lv_obj_set_hidden(p->down, solo);
     lv_obj_set_hidden(p->label, solo);
     char t[24];
-    snprintf(t, sizeof(t), "%s %u/%u", p->unit, (unsigned)(idx + 1) & 0xff, (unsigned)p->count & 0xff);
+    snprintf(t, sizeof(t), "%s\n%u/%u", p->unit, (unsigned)(idx + 1) & 0xff, (unsigned)p->count & 0xff);
     lv_label_set_text(p->label, t);
-    /* The rotated label stays centred on the column whatever its length. */
+    /* Upright, centred on the column: a rotated label needs a 32-bit layer per redraw, 4-9 KB of heap at a
+     * time on every page change (the IR page's heap dip to 10 KB, 2026-10-09). */
     lv_obj_update_layout(p->label);
-    lv_obj_set_x(p->label, EDGE_X + PAGER_W / 2 - lv_obj_get_width(p->label) / 2);
     lv_obj_set_y(p->label, p->mid_y - lv_obj_get_height(p->label) / 2);
     /* Ends of the range: dim the arrow that goes nowhere (a wrapping pager has none). */
     lv_obj_set_style_opa(p->up, idx == 0 && !p->wrap ? LV_OPA_30 : LV_OPA_COVER, 0);
@@ -239,12 +239,11 @@ static void pager_create(pager_t *p, lv_obj_t *parent, int32_t y, int32_t h, con
     lv_obj_add_event_cb(p->up, ui_on_pressed, LV_EVENT_PRESSED, NULL);
     p->down = ui_button(parent, EDGE_X, y + h - PAGER_BTN_H, PAGER_W, PAGER_BTN_H, LV_SYMBOL_DOWN, &lv_font_montserrat_14, C_PANEL, C_MUTED, on_pager_step, p);
     lv_obj_add_event_cb(p->down, ui_on_pressed, LV_EVENT_PRESSED, NULL);
-    /* The label is laid out horizontally, then rotated 90° counter-clockwise about its centre. */
     p->label = ui_label(parent, &montserrat_medium_12, C_MUTED);
     lv_label_set_text(p->label, "");
-    lv_obj_set_style_transform_pivot_x(p->label, LV_PCT(50), 0);
-    lv_obj_set_style_transform_pivot_y(p->label, LV_PCT(50), 0);
-    lv_obj_set_style_transform_rotation(p->label, 2700, 0);
+    lv_obj_set_x(p->label, EDGE_X);
+    lv_obj_set_width(p->label, PAGER_W);
+    lv_obj_set_style_text_align(p->label, LV_TEXT_ALIGN_CENTER, 0);
 }
 
 static lv_obj_t *pager_add_page(pager_t *p, lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h)
