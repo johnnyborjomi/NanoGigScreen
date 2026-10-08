@@ -43,8 +43,15 @@ components/
   nano_ota/              update mode: Wi-Fi join (NVS credentials), HTTPS image check + install, rollback
   cyd_board/             ESP32-2432S028 bring-up: SPI panel, XPT2046 touch, backlight, LED, LVGL port
   nano_ui/               LVGL 9 gig screen
+    nano_ui.c            the views (gig, menu, settings, presets, capture, tuner, tempo, connect, update)
+    ui_common.h/.c       palette, screen size, fonts, label / box / button constructors
+    ui_value_ctrl.h/.c   reusable parameter control: value, slider, fine / coarse steps, double tap reset
 docs/HARDWARE.md         board facts, pinout, mounting notes
 ```
+
+New pages build on `ui_common.h`. A new adjustable pedal parameter is a `ui_value_ctrl_cfg_t`:
+its raw range, the mapping to the slider and the readout, the step sizes and a change callback
+(see the capture volume in `nano_ui.c`). The control is freed with the page that holds it.
 
 ## Build
 
