@@ -118,7 +118,8 @@ static char s_fw_version[32] = "unknown";
 static char s_wifi_ssid[33];
 static lv_obj_t *s_fw_value;
 static lv_obj_t *s_upd_main, *s_upd_version, *s_upd_wifi, *s_upd_text, *s_upd_sub, *s_upd_bar, *s_upd_action, *s_upd_close;
-static lv_obj_t *s_upd_nets, *s_upd_net_list, *s_upd_back, *s_upd_title;
+static lv_obj_t *s_upd_nets, *s_upd_net_list, *s_upd_back, *s_upd_title, *s_upd_nets_title;
+static bool s_upd_scanning;
 static lv_obj_t *s_upd_pass, *s_upd_pass_title, *s_upd_pass_ta, *s_upd_kb;
 static nano_update_state_t s_upd_state = NANO_UPDATE_BUSY;
 static nano_ui_network_t s_upd_networks[10];
@@ -1771,9 +1772,9 @@ static void build_update(lv_obj_t *scr)
 
     /* Network picker. */
     s_upd_nets = ui_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
-    l = ui_label(s_upd_nets, &lv_font_montserrat_14, C_TEXT);
-    lv_label_set_text(l, "Choose Wi-Fi");
-    lv_obj_set_pos(l, UPD_X, 8);
+    s_upd_nets_title = ui_label(s_upd_nets, &lv_font_montserrat_14, C_TEXT);
+    lv_label_set_text(s_upd_nets_title, "Choose Wi-Fi");
+    lv_obj_set_pos(s_upd_nets_title, UPD_X, 8);
     lv_obj_t *rescan = ui_button(s_upd_nets, SCREEN_W - UPD_X - 76, 2, 76, 28, LV_SYMBOL_REFRESH " Scan", &lv_font_montserrat_12, C_PANEL, C_ACCENT, on_upd_change_wifi, NULL);
     lv_obj_set_style_radius(rescan, 7, 0);
     lv_obj_add_event_cb(rescan, ui_on_pressed, LV_EVENT_PRESSED, NULL);
@@ -1879,6 +1880,18 @@ void nano_ui_update_status(nano_update_state_t state, const char *text, int perc
 void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, bool scanning)
 {
     if (!s_update) return;
+    /* A scan in progress: the title says so and the last list stays (no blank, no rebuild). The tap and
+     * the scan's own start both report it: the second one changes nothing. */
+    lv_label_set_text(s_upd_nets_title, scanning ? "Searching..." : "Choose Wi-Fi");
+    bool had_list = s_upd_network_count > 0;
+    if (scanning) {
+        bool again = s_upd_scanning;
+        s_upd_scanning = true;
+        if (s_upd_panel != UPD_PANEL_PASSWORD) upd_show_panel(UPD_PANEL_NETWORKS);
+        if (again || had_list) return;
+    } else {
+        s_upd_scanning = false;
+    }
     if (count > (int)(sizeof(s_upd_networks) / sizeof(s_upd_networks[0]))) count = (int)(sizeof(s_upd_networks) / sizeof(s_upd_networks[0]));
     s_upd_network_count = scanning || !networks ? 0 : count;
     if (s_upd_network_count) memcpy(s_upd_networks, networks, sizeof(*networks) * (size_t)s_upd_network_count);
