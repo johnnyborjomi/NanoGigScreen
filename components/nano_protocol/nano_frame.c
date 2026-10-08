@@ -160,6 +160,30 @@ size_t nano_build_exp_assign_request(uint8_t *out, size_t cap, uint8_t preset_in
     return 10;
 }
 
+size_t nano_build_preset_rename(uint8_t *out, size_t cap, uint8_t preset_index, const char *name)
+{
+    size_t n = name ? strlen(name) : 0;
+    if (n == 0 || n > NANO_PRESET_NAME_MAX || preset_index >= NANO_PRESET_COUNT) return 0;
+    size_t len = 2 + 6 + n + 4;
+    if (cap < len) return 0;
+    size_t i = 0;
+    out[i++] = (uint8_t)(len - 2);
+    out[i++] = 0xC0;
+    out[i++] = 0x08; /* field 1: update */
+    out[i++] = 0x01;
+    out[i++] = 0x18; /* field 3: the preset */
+    out[i++] = preset_index;
+    out[i++] = 0x22; /* field 4: the name */
+    out[i++] = (uint8_t)n;
+    memcpy(out + i, name, n);
+    i += n;
+    out[i++] = 0x6F;
+    out[i++] = 0x00;
+    out[i++] = 0x00;
+    out[i++] = 0x00;
+    return i;
+}
+
 size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mute)
 {
     if (cap < 17 || reference_hz < 400.0f || reference_hz > 480.0f) return 0;

@@ -370,6 +370,28 @@ static void test_labels_and_models(void)
     CHECK(nano_build_outputs_mute(m, sizeof(m), true) == 10 && m[4] == 0x68 && m[5] == 1 && m[6] == 0x43);
     CHECK(nano_build_outputs_mute(m, sizeof(m), false) == 10 && m[5] == 0);
 
+    printf("preset rename\n");
+    {
+        /* Byte-exact against the frames the pedal accepted (probe 2026-10-08, preset 45 "Gojira T"). */
+        const uint8_t gt[] = { 0x12, 0xC0, 0x08, 0x01, 0x18, 0x2C, 0x22, 0x08, 'G', 'o', 'j', 'i', 'r', 'a', ' ', 'T', 0x6F, 0x00, 0x00, 0x00 };
+        uint8_t f[40];
+        CHECK(nano_build_preset_rename(f, sizeof(f), 44, "Gojira T") == sizeof(gt) && memcmp(f, gt, sizeof(gt)) == 0);
+        CHECK(nano_build_preset_rename(f, sizeof(f), 44, "") == 0);
+        CHECK(nano_build_preset_rename(f, sizeof(f), 64, "Name") == 0);
+        uint8_t big[64];
+        CHECK(nano_build_preset_rename(big, sizeof(big), 0, "12345678901234567890123456789012") == 0); /* 32 > NANO_PRESET_NAME_MAX */
+        CHECK(nano_build_preset_rename(big, sizeof(big), 0, "1234567890123456789012345678901") == 43);
+        CHECK(nano_build_preset_rename(f, 19, 44, "Gojira T") == 0);
+        /* The pedal's reply. */
+        const uint8_t ok[] = { 0x0A, 0xC0, 0x08, 0x06, 0x18, 0x2C, 0x20, 0x01, 0x70, 0x00, 0x00, 0x00 };
+        nano_event_t ev;
+        nano_decode_event(ok, sizeof(ok), &ev);
+        CHECK(ev.kind == NANO_EV_RENAME_REPLY && ev.preset == 44 && ev.ok);
+        const uint8_t no[] = { 0x08, 0xC0, 0x08, 0x06, 0x18, 0x2C, 0x70, 0x00, 0x00, 0x00 };
+        nano_decode_event(no, sizeof(no), &ev);
+        CHECK(ev.kind == NANO_EV_RENAME_REPLY && ev.preset == 44 && !ev.ok);
+    }
+
     printf("capture volume\n");
     {
         /* Byte-exact against Cortex Cloud's writes (HCI snoop 2026-10-07). */

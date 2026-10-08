@@ -1,4 +1,4 @@
 idf_component_register(
   SRCS "nano_ota.c"
   INCLUDE_DIRS "include"
-  REQUIRES esp_wifi esp_netif esp_event esp_https_ota esp_http_client app_update mbedtls nvs_flash)
+  REQUIRES esp_wifi esp_netif esp_event esp_https_ota esp_http_client app_update mbedtls nvs_flash esp_timer)

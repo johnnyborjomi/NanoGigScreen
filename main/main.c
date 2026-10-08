@@ -62,7 +62,7 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT, MSG_CAPTURE_VOLUME } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT, MSG_CAPTURE_VOLUME, MSG_RENAME } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
@@ -71,7 +71,8 @@ typedef struct {
     bool fx_on;
     bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show, MSG_ROTATE: 180 degrees */
     int delta;      /* MSG_TEMPO_DELTA */
-    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT (preset index), MSG_CAPTURE_VOLUME (raw) */
+    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT / MSG_RENAME (preset index), MSG_CAPTURE_VOLUME (raw) */
+    char text[NANO_PRESET_NAME_MAX + 1]; /* MSG_RENAME: the new name */
     packet_t pkt;
 } app_msg_t;
 
@@ -253,6 +254,12 @@ static void ble_on_notify(const uint8_t *data, size_t len)
 static void ui_on_prev(void) { app_msg_t m = { .kind = MSG_PREV }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_next(void) { app_msg_t m = { .kind = MSG_NEXT }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_select(uint8_t idx) { app_msg_t m = { .kind = MSG_SELECT, .value = idx }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_rename(uint8_t idx, const char *name)
+{
+    app_msg_t m = { .kind = MSG_RENAME, .value = idx };
+    snprintf(m.text, sizeof(m.text), "%s", name);
+    xQueueSend(s_queue, &m, 0);
+}
 static void ui_on_capture_volume(uint8_t raw) { app_msg_t m = { .kind = MSG_CAPTURE_VOLUME, .value = raw }; xQueueSend(s_queue, &m, 0); }
 static void ui_on_toggle_fx(uint8_t slot, bool on)
 {
@@ -566,6 +573,44 @@ static void set_capture_volume(uint8_t raw)
         s_capvol_written_us = esp_timer_get_time();
         schedule_state(CONFIRM_MS);
     }
+}
+
+/* Preset rename (RenamePreset, verified 2026-10-08): the pedal stores the name at once and answers
+ * type 0x70. The cached name changes only when it says yes. */
+#define RENAME_TIMEOUT_US 3000000
+static int s_rename_idx = -1;         /* waiting for the answer for this preset */
+static char s_rename_name[NANO_PRESET_NAME_MAX + 1];
+static int64_t s_rename_sent_us;
+
+static void rename_answer(bool ok, const char *msg)
+{
+    int idx = s_rename_idx;
+    s_rename_idx = -1;
+    if (idx < 0) return;
+    if (ok && s_meta_valid) {
+        snprintf(s_meta_blob.meta.presets[idx].name, sizeof(s_meta_blob.meta.presets[idx].name), "%s", s_rename_name);
+        meta_save();
+    }
+    if (lvgl_port_lock(50)) {
+        if (ok) nano_ui_set_preset(s_state_valid ? s_state.active_preset : 0, s_meta_valid ? &s_meta_blob.meta : NULL);
+        nano_ui_rename_result((uint8_t)idx, ok, msg);
+        lvgl_port_unlock();
+    }
+}
+
+static void rename_preset(uint8_t idx, const char *name)
+{
+    uint8_t frame[48];
+    size_t n = nano_build_preset_rename(frame, sizeof(frame), idx, name);
+    if (!s_link_ready || !n || nano_ble_write(frame, n) != 0) {
+        s_rename_idx = idx;
+        rename_answer(false, "Not connected to the pedal");
+        return;
+    }
+    ESP_LOGI(TAG, "-> rename preset %u to \"%s\"", idx + 1, name);
+    s_rename_idx = idx;
+    snprintf(s_rename_name, sizeof(s_rename_name), "%s", name);
+    s_rename_sent_us = esp_timer_get_time();
 }
 
 /* Gate on/off: `0A C0 08 01 18 09 20 <0 on / 1 off> 1F 00 00 00` (verified 2026-09-12). */
@@ -895,6 +940,10 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
             lvgl_port_unlock();
         }
         break;
+    case NANO_EV_RENAME_REPLY:
+        ESP_LOGI(TAG, "<- rename preset %u: %s", ev.preset + 1, ev.ok ? "ok" : "refused");
+        if (ev.preset == s_rename_idx) rename_answer(ev.ok, "The pedal did not accept this name");
+        break;
     case NANO_EV_OUTPUTS_MUTE_ACK:
         ESP_LOGI(TAG, "<- outputs mute ack");
         schedule_settings(SETTINGS_READ_DELAY_MS); /* confirm against the pedal's own report */
@@ -1017,6 +1066,9 @@ static void app_task(void *arg)
             case MSG_CAPTURE_VOLUME:
                 set_capture_volume(m.value);
                 break;
+            case MSG_RENAME:
+                rename_preset(m.value, m.text);
+                break;
             case MSG_TOGGLE_FX:
                 toggle_fx(m.fx_slot, m.fx_on);
                 break;
@@ -1092,6 +1144,10 @@ static void app_task(void *arg)
             }
         }
         if (!s_update_mode) nano_assembler_tick(&s_asm, now_ms());
+        if (s_rename_idx >= 0 && esp_timer_get_time() - s_rename_sent_us > RENAME_TIMEOUT_US) {
+            ESP_LOGW(TAG, "rename: no answer");
+            rename_answer(false, "No answer from the pedal");
+        }
         tempo_edit_tick();
         if (s_select_inflight && esp_timer_get_time() - s_select_sent_us > SELECT_ACK_TIMEOUT_US) {
             ESP_LOGW(TAG, "preset select ack timed out");
@@ -1129,7 +1185,7 @@ void app_main(void)
     uint8_t brightness = brightness_load();
     cyd_backlight_set_level(brightness);
     nano_ui_callbacks_t ui_cb = {
-        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_capture_volume = ui_on_capture_volume, .on_toggle_fx = ui_on_toggle_fx,
+        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_capture_volume = ui_on_capture_volume, .on_rename_preset = ui_on_rename, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute, .on_expression_show = ui_on_expression_show,

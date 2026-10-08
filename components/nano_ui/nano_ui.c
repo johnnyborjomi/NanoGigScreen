@@ -5,9 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "nano_models.h"
 #include "ui_common.h"
+#include "ui_text_edit.h"
 #include "ui_value_ctrl.h"
 
 /* Slot colours for the preset label (1A red, 1B orange, 1C green, 1D cyan ...). */
@@ -44,6 +46,10 @@ static lv_obj_t *s_scr;
 static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
 static lv_obj_t *s_capture_view; /* built on open, freed on close, like the presets list */
 static lv_obj_t *s_presets; /* built on open, freed on close: ~10 KB of heap the gig needs more */
+static lv_obj_t *s_rename_view; /* built on open, freed on close (the keyboard) */
+static ui_text_edit_t *s_rename_edit; /* freed with the page */
+static uint8_t s_rename_idx;
+static nano_view_t s_rename_from = NANO_VIEW_MAIN; /* where "<" goes back to */
 static lv_obj_t *s_update; /* built on first open: the keyboard and the network list cost heap the gig never needs */
 static lv_obj_t *s_tempo_big, *s_tempo_hint;
 static float s_tempo_bpm;
@@ -112,7 +118,8 @@ static char s_fw_version[32] = "unknown";
 static char s_wifi_ssid[33];
 static lv_obj_t *s_fw_value;
 static lv_obj_t *s_upd_main, *s_upd_version, *s_upd_wifi, *s_upd_text, *s_upd_sub, *s_upd_bar, *s_upd_action, *s_upd_close;
-static lv_obj_t *s_upd_nets, *s_upd_net_list, *s_upd_net_cancel;
+static lv_obj_t *s_upd_nets, *s_upd_net_list, *s_upd_back, *s_upd_title, *s_upd_nets_title;
+static bool s_upd_scanning;
 static lv_obj_t *s_upd_pass, *s_upd_pass_title, *s_upd_pass_ta, *s_upd_kb;
 static nano_update_state_t s_upd_state = NANO_UPDATE_BUSY;
 static nano_ui_network_t s_upd_networks[10];
@@ -416,6 +423,9 @@ static void on_bank_step(lv_event_t *e)
 
 /* ---- main view ------------------------------------------------------------ */
 
+static void on_preset_name_long(lv_event_t *e);
+static void show_view(nano_view_t view, bool notify);
+
 static void build_main(lv_obj_t *scr)
 {
     s_main = ui_box(scr, 0, 0, SCREEN_W, SCREEN_H, C_BG);
@@ -453,6 +463,13 @@ static void build_main(lv_obj_t *scr)
     s_preset_name = ui_label(s_main, &lv_font_montserrat_32, C_TEXT);
     lv_label_set_long_mode(s_preset_name, LV_LABEL_LONG_WRAP);
     lv_label_set_text(s_preset_name, "NanoGig");
+    /* Long press on the label or the name: rename (a tap does nothing, so no keyboard by accident). */
+    lv_obj_t *name_parts[2] = { s_preset_label, s_preset_name };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_set_clickable(name_parts[i], true);
+        lv_obj_add_event_cb(name_parts[i], ui_on_pressed, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(name_parts[i], on_preset_name_long, LV_EVENT_LONG_PRESSED, NULL);
+    }
     for (int i = 0; i < 4; i++) {
         lv_obj_t *b = ui_box(s_main, 0, 0, BADGE_W, BADGE_H, FS_BG[i]);
         lv_obj_set_style_radius(b, 4, 0);
@@ -786,6 +803,7 @@ static void build_settings(lv_obj_t *scr)
 static pager_t s_presets_pager;
 static lv_obj_t *s_preset_rows[PRESET_ROWS_MAX], *s_preset_row_tag[PRESET_ROWS_MAX], *s_preset_row_name[PRESET_ROWS_MAX];
 static int32_t s_presets_top, s_presets_h;
+static int s_presets_return_bank = -1; /* reopen on this bank (back from renaming one of its presets) */
 
 static void on_preset_row_clicked(lv_event_t *e)
 {
@@ -794,6 +812,16 @@ static void on_preset_row_clicked(lv_event_t *e)
     if (idx >= NANO_PRESET_COUNT) return;
     if (s_cb.on_select_preset) s_cb.on_select_preset((uint8_t)idx);
     nano_ui_show(s_base_view);
+}
+
+/* Long press on a row: rename that preset ("<" comes back to this list). */
+static void on_preset_row_long(lv_event_t *e)
+{
+    int row = (int)(uintptr_t)lv_event_get_user_data(e);
+    int idx = s_presets_pager.current * s_per_bank + row;
+    if (idx >= NANO_PRESET_COUNT) return;
+    s_presets_return_bank = s_presets_pager.current;
+    nano_ui_open_rename((uint8_t)idx);
 }
 
 /* Fill the rows for one bank: as many as presets per bank, sized to share the page height. */
@@ -862,7 +890,8 @@ static void build_presets(lv_obj_t *scr)
         lv_obj_set_style_bg_color(row, lv_color_hex(C_TEXT), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(row, LV_OPA_30, LV_STATE_PRESSED);
         lv_obj_add_event_cb(row, ui_on_pressed, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(row, on_preset_row_clicked, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(row, on_preset_row_clicked, LV_EVENT_SHORT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(row, on_preset_row_long, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)i);
         s_preset_row_tag[i] = ui_label(row, &lv_font_montserrat_14, C_TEXT);
         s_preset_row_name[i] = ui_label(row, &lv_font_montserrat_14, C_TEXT);
         lv_label_set_long_mode(s_preset_row_name[i], LV_LABEL_LONG_DOT);
@@ -871,11 +900,13 @@ static void build_presets(lv_obj_t *scr)
     }
 }
 
-/* Open on the bank of the shown preset. */
+/* Open on the bank of the shown preset, or the one a rename started from. */
 static void presets_open(void)
 {
     int banks = (NANO_PRESET_COUNT + s_per_bank - 1) / s_per_bank;
-    pager_set_count(&s_presets_pager, banks, s_preset / s_per_bank);
+    int bank = s_presets_return_bank >= 0 && s_presets_return_bank < banks ? s_presets_return_bank : s_preset / s_per_bank;
+    s_presets_return_bank = -1;
+    pager_set_count(&s_presets_pager, banks, bank);
 }
 
 /*
@@ -957,6 +988,74 @@ static void build_capture(lv_obj_t *scr)
         lv_label_set_text(hint, "Read-only for now");
     }
 }
+
+/*
+ * Rename page: a ui_text_edit with the preset's name. The pedal stores a new name at once (no save
+ * needed); the page waits for its answer (nano_ui_rename_result) and closes on success.
+ */
+static void on_rename_back(lv_event_t *e) { (void)e; nano_ui_show(s_rename_from); }
+
+/* The pedal accepts any name; like DrD85's controller, no two presets share one (ignoring letter case).
+ * Spaces at either end would be invisible on the screen. */
+static bool rename_validate(const char *text, char *why, size_t cap, void *user)
+{
+    (void)user;
+    if (text[0] == ' ' || text[strlen(text) - 1] == ' ') {
+        snprintf(why, cap, "No space at the start or end");
+        return false;
+    }
+    for (int i = 0; s_meta && i < NANO_PRESET_COUNT; i++) {
+        if (i != s_rename_idx && strcasecmp(s_meta->presets[i].name, text) == 0) {
+            snprintf(why, cap, "Preset %d already has this name", i + 1);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void rename_submit(const char *text, void *user)
+{
+    (void)user;
+    const char *old = s_meta ? s_meta->presets[s_rename_idx].name : "";
+    if (strcmp(text, old) == 0 || !s_cb.on_rename_preset) {
+        nano_ui_show(s_rename_from); /* nothing to write */
+        return;
+    }
+    s_cb.on_rename_preset(s_rename_idx, text);
+}
+
+static void build_rename(lv_obj_t *scr)
+{
+    char label[8], title[32];
+    nano_preset_label(s_rename_idx, s_per_bank, s_label_style, label, sizeof(label));
+    snprintf(title, sizeof(title), "Rename preset %s", label);
+    s_rename_view = make_overlay_cb(scr, title, on_rename_back, on_close, NULL);
+    const ui_text_edit_cfg_t cfg = {
+        .text = s_meta ? s_meta->presets[s_rename_idx].name : "",
+        .placeholder = "Preset name",
+        .min_len = 4, .max_len = NANO_PRESET_NAME_MAX,
+        .validate = rename_validate,
+        .on_submit = rename_submit,
+    };
+    s_rename_edit = ui_text_edit_create(s_rename_view, TOP_H + 8, &cfg);
+}
+
+void nano_ui_open_rename(uint8_t index)
+{
+    if (index >= NANO_PRESET_COUNT || !s_cb.on_rename_preset) return;
+    s_rename_idx = index;
+    s_rename_from = s_view == NANO_VIEW_PRESETS ? NANO_VIEW_PRESETS : s_base_view;
+    show_view(NANO_VIEW_RENAME, true);
+}
+
+void nano_ui_rename_result(uint8_t index, bool ok, const char *msg)
+{
+    if (s_view != NANO_VIEW_RENAME || index != s_rename_idx) return;
+    if (ok) nano_ui_show(s_rename_from);
+    else ui_text_edit_set_error(s_rename_edit, msg);
+}
+
+static void on_preset_name_long(lv_event_t *e) { (void)e; nano_ui_open_rename(s_preset); }
 
 static void build_tuner(lv_obj_t *scr)
 {
@@ -1194,6 +1293,14 @@ static void show_view(nano_view_t view, bool notify)
         s_capture_view = NULL;
         s_cap_vol = NULL; /* freed with the page */
     }
+    if (view == NANO_VIEW_RENAME) {
+        build_rename(s_scr);
+        lv_obj_set_hidden(s_rename_view, false);
+    } else if (s_rename_view) {
+        lv_obj_delete_async(s_rename_view);
+        s_rename_view = NULL;
+        s_rename_edit = NULL; /* freed with the page */
+    }
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
     lv_obj_set_hidden(s_tempo_view, view != NANO_VIEW_TEMPO);
     lv_obj_set_hidden(s_connect, view != NANO_VIEW_CONNECT);
@@ -1222,7 +1329,7 @@ void nano_ui_set_connected(bool live)
     s_base_view = live ? NANO_VIEW_MAIN : NANO_VIEW_CONNECT;
     if (live && s_view == NANO_VIEW_CONNECT) show_view(NANO_VIEW_MAIN, false);
     /* Down: the pedal's views make no claims any more; the menu and settings can stay open. */
-    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO || s_view == NANO_VIEW_CAPTURE)) show_view(NANO_VIEW_CONNECT, false);
+    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO || s_view == NANO_VIEW_CAPTURE || s_view == NANO_VIEW_RENAME)) show_view(NANO_VIEW_CONNECT, false);
 }
 
 void nano_ui_show(nano_view_t view)
@@ -1496,8 +1603,20 @@ void nano_ui_set_tuner(const char *note, float cents, bool in_tune)
 
 typedef enum { UPD_PANEL_MAIN, UPD_PANEL_NETWORKS, UPD_PANEL_PASSWORD } upd_panel_t;
 
+static upd_panel_t s_upd_panel = UPD_PANEL_MAIN;
+
+/* The header "<": password -> networks, networks -> the update (only with a network to go back to). */
+static void upd_refresh_back(void)
+{
+    bool back = s_upd_panel == UPD_PANEL_PASSWORD || (s_upd_panel == UPD_PANEL_NETWORKS && s_wifi_ssid[0]);
+    lv_obj_set_hidden(s_upd_back, !back);
+    lv_obj_set_x(s_upd_title, back ? 40 : 12);
+}
+
 static void upd_show_panel(upd_panel_t p)
 {
+    s_upd_panel = p;
+    upd_refresh_back();
     lv_obj_set_hidden(s_upd_main, p != UPD_PANEL_MAIN);
     lv_obj_set_hidden(s_upd_nets, p != UPD_PANEL_NETWORKS);
     lv_obj_set_hidden(s_upd_pass, p != UPD_PANEL_PASSWORD);
@@ -1507,7 +1626,7 @@ static void upd_refresh_wifi(void)
 {
     lv_label_set_text(s_upd_wifi, s_wifi_ssid[0] ? s_wifi_ssid : "Not set up");
     lv_obj_set_style_text_color(s_upd_wifi, lv_color_hex(s_wifi_ssid[0] ? C_TEXT : C_MUTED), 0);
-    lv_obj_set_hidden(s_upd_net_cancel, !s_wifi_ssid[0]);
+    upd_refresh_back();
 }
 
 static void upd_start_join(const char *ssid, const char *password)
@@ -1531,7 +1650,11 @@ static void on_upd_change_wifi(lv_event_t *e)
     if (s_cb.on_wifi_scan) s_cb.on_wifi_scan();
 }
 
-static void on_upd_cancel_networks(lv_event_t *e) { (void)e; upd_show_panel(UPD_PANEL_MAIN); }
+static void on_upd_back(lv_event_t *e)
+{
+    (void)e;
+    upd_show_panel(s_upd_panel == UPD_PANEL_PASSWORD ? UPD_PANEL_NETWORKS : UPD_PANEL_MAIN);
+}
 
 static void on_upd_action(lv_event_t *e)
 {
@@ -1578,10 +1701,10 @@ static void on_upd_keyboard(lv_event_t *e)
         const char *pw = lv_textarea_get_text(s_upd_pass_ta);
         if (strlen(pw) < 8) return; /* WPA2 needs 8 or more: keep typing */
         upd_start_join(s_upd_pick, pw);
-    } else if (code == LV_EVENT_CANCEL) {
-        upd_show_panel(UPD_PANEL_NETWORKS);
     }
 }
+
+
 
 /* Four bars, lit by signal strength. */
 static void make_bars(lv_obj_t *parent, int32_t x, int32_t y, int8_t rssi)
@@ -1596,7 +1719,9 @@ static void make_bars(lv_obj_t *parent, int32_t x, int32_t y, int8_t rssi)
 
 static void build_update(lv_obj_t *scr)
 {
-    s_update = make_overlay_cb(scr, "Firmware update", NULL, on_upd_close, &s_upd_close);
+    s_update = make_overlay_cb(scr, "Firmware update", on_upd_back, on_upd_close, &s_upd_close);
+    s_upd_back = lv_obj_get_child(s_update, 0);  /* make_overlay_cb: back, title, close */
+    s_upd_title = lv_obj_get_child(s_update, 1);
     const int32_t top = TOP_H + 4;
 
     /* Main panel: installed version, Wi-Fi line, status, action. */
@@ -1647,54 +1772,32 @@ static void build_update(lv_obj_t *scr)
 
     /* Network picker. */
     s_upd_nets = ui_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
-    l = ui_label(s_upd_nets, &lv_font_montserrat_14, C_TEXT);
-    lv_label_set_text(l, "Choose Wi-Fi");
-    lv_obj_set_pos(l, UPD_X, 8);
+    s_upd_nets_title = ui_label(s_upd_nets, &lv_font_montserrat_14, C_TEXT);
+    lv_label_set_text(s_upd_nets_title, "Choose Wi-Fi");
+    lv_obj_set_pos(s_upd_nets_title, UPD_X, 8);
     lv_obj_t *rescan = ui_button(s_upd_nets, SCREEN_W - UPD_X - 76, 2, 76, 28, LV_SYMBOL_REFRESH " Scan", &lv_font_montserrat_12, C_PANEL, C_ACCENT, on_upd_change_wifi, NULL);
     lv_obj_set_style_radius(rescan, 7, 0);
     lv_obj_add_event_cb(rescan, ui_on_pressed, LV_EVENT_PRESSED, NULL);
-    s_upd_net_cancel = ui_button(s_upd_nets, SCREEN_W - UPD_X - 76 - 6 - 70, 2, 70, 28, "Cancel", &lv_font_montserrat_12, C_PANEL, C_MUTED, on_upd_cancel_networks, NULL);
-    lv_obj_set_style_radius(s_upd_net_cancel, 7, 0);
-    lv_obj_add_event_cb(s_upd_net_cancel, ui_on_pressed, LV_EVENT_PRESSED, NULL);
     s_upd_net_list = ui_box(s_upd_nets, UPD_X, 36, UPD_W, SCREEN_H - top - 40, C_BG);
     lv_obj_set_scrollable(s_upd_net_list, true);
     lv_obj_set_scroll_dir(s_upd_net_list, LV_DIR_VER);
     lv_obj_set_flex_flow(s_upd_net_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_upd_net_list, 4, 0);
 
-    /* Password: field + show/hide, keyboard under it (OK joins, the keyboard key goes back). */
+    /* Password: field + show/hide, keyboard under it (OK joins, the header "<" goes back). */
     s_upd_pass = ui_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
     s_upd_pass_title = ui_label(s_upd_pass, &lv_font_montserrat_12, C_MUTED);
     lv_obj_set_pos(s_upd_pass_title, UPD_X, 2);
-    lv_obj_set_width(s_upd_pass_title, UPD_W);
+    lv_obj_set_size(s_upd_pass_title, UPD_W, lv_font_get_line_height(&lv_font_montserrat_12));
     lv_label_set_long_mode(s_upd_pass_title, LV_LABEL_LONG_DOT);
-    s_upd_pass_ta = lv_textarea_create(s_upd_pass);
-    lv_obj_set_pos(s_upd_pass_ta, UPD_X, 20);
-    lv_obj_set_size(s_upd_pass_ta, UPD_W - 48, UPD_PASS_TA_H);
-    lv_textarea_set_one_line(s_upd_pass_ta, true);
+    s_upd_pass_ta = ui_text_field(s_upd_pass, UPD_X, 20, UPD_W - 48, UPD_PASS_TA_H, &lv_font_montserrat_14);
     lv_textarea_set_password_mode(s_upd_pass_ta, true);
     lv_textarea_set_max_length(s_upd_pass_ta, 63);
     lv_textarea_set_placeholder_text(s_upd_pass_ta, "8 characters or more");
-    lv_obj_set_style_bg_color(s_upd_pass_ta, lv_color_hex(C_PANEL), 0);
-    lv_obj_set_style_border_color(s_upd_pass_ta, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_text_color(s_upd_pass_ta, lv_color_hex(C_TEXT), 0);
-    lv_obj_set_style_text_font(s_upd_pass_ta, &lv_font_montserrat_14, 0);
     lv_obj_t *eye = ui_button(s_upd_pass, SCREEN_W - UPD_X - 42, 20, 42, UPD_PASS_TA_H, LV_SYMBOL_EYE_OPEN, &lv_font_montserrat_14, C_PANEL, C_MUTED, on_upd_eye, NULL);
     lv_obj_set_style_radius(eye, 7, 0);
-    s_upd_kb = lv_keyboard_create(s_upd_pass);
-    lv_obj_set_size(s_upd_kb, SCREEN_W, SCREEN_H - UPD_KB_Y);
-    lv_obj_align(s_upd_kb, LV_ALIGN_BOTTOM_MID, 0, 0); /* the keyboard is bottom-aligned by default: pos would be an offset */
-    lv_keyboard_set_textarea(s_upd_kb, s_upd_pass_ta);
-    lv_obj_set_style_bg_color(s_upd_kb, lv_color_hex(C_BG), LV_PART_MAIN);
-    lv_obj_set_style_pad_all(s_upd_kb, 2, LV_PART_MAIN);
-    lv_obj_set_style_pad_gap(s_upd_kb, 3, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_upd_kb, lv_color_hex(C_PANEL_2), LV_PART_ITEMS);
-    lv_obj_set_style_text_color(s_upd_kb, lv_color_hex(C_TEXT), LV_PART_ITEMS);
-    lv_obj_set_style_border_width(s_upd_kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_shadow_width(s_upd_kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_radius(s_upd_kb, 5, LV_PART_ITEMS);
+    s_upd_kb = ui_keyboard(s_upd_pass, SCREEN_H - UPD_KB_Y, s_upd_pass_ta);
     lv_obj_add_event_cb(s_upd_kb, on_upd_keyboard, LV_EVENT_READY, NULL);
-    lv_obj_add_event_cb(s_upd_kb, on_upd_keyboard, LV_EVENT_CANCEL, NULL);
 
     upd_refresh_wifi();
     nano_ui_update_status(NANO_UPDATE_BUSY, "Starting Wi-Fi", 0);
@@ -1770,12 +1873,25 @@ void nano_ui_update_status(nano_update_state_t state, const char *text, int perc
     }
     /* Closing restarts the screen: not while the new image is being written or activated. */
     lv_obj_set_hidden(s_upd_close, state == NANO_UPDATE_DOWNLOADING || state == NANO_UPDATE_DONE);
-    upd_show_panel(UPD_PANEL_MAIN);
+    /* A check that was already running reports here while the user picks a network: it updates the
+     * main panel behind the list instead of pulling the list away (the "Change" flicker). */
 }
 
 void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, bool scanning)
 {
     if (!s_update) return;
+    /* A scan in progress: the title says so and the last list stays (no blank, no rebuild). The tap and
+     * the scan's own start both report it: the second one changes nothing. */
+    lv_label_set_text(s_upd_nets_title, scanning ? "Searching..." : "Choose Wi-Fi");
+    bool had_list = s_upd_network_count > 0;
+    if (scanning) {
+        bool again = s_upd_scanning;
+        s_upd_scanning = true;
+        if (s_upd_panel != UPD_PANEL_PASSWORD) upd_show_panel(UPD_PANEL_NETWORKS);
+        if (again || had_list) return;
+    } else {
+        s_upd_scanning = false;
+    }
     if (count > (int)(sizeof(s_upd_networks) / sizeof(s_upd_networks[0]))) count = (int)(sizeof(s_upd_networks) / sizeof(s_upd_networks[0]));
     s_upd_network_count = scanning || !networks ? 0 : count;
     if (s_upd_network_count) memcpy(s_upd_networks, networks, sizeof(*networks) * (size_t)s_upd_network_count);
@@ -1801,5 +1917,5 @@ void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, 
         }
         make_bars(row, UPD_W - 28, (UPD_ROW_H - 13) / 2, n->rssi);
     }
-    upd_show_panel(UPD_PANEL_NETWORKS);
+    if (s_upd_panel != UPD_PANEL_PASSWORD) upd_show_panel(UPD_PANEL_NETWORKS); /* never from under the typing */
 }

@@ -273,6 +273,12 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
         out->kind = NANO_EV_SETTINGS;
         out->outputs_muted = nano_first_varint(body, plen, 16, 0) == 1;
         return;
+    case NANO_MSG_RENAME_REPLY:
+        /* `08 06 18 <preset> 20 <1 = ok>` (2026-10-08) */
+        out->kind = NANO_EV_RENAME_REPLY;
+        out->preset = (uint8_t)nano_first_varint(body, plen, 3, 0);
+        out->ok = nano_first_varint(body, plen, 4, 0) == 1;
+        return;
     case NANO_MSG_OUTPUTS_MUTE_ACK:
         out->kind = NANO_EV_OUTPUTS_MUTE_ACK;
         return;

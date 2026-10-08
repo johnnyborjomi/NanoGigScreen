@@ -14,6 +14,7 @@
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -193,7 +194,14 @@ static void wifi_scan(void)
         esp_wifi_disconnect();
     }
     s_network_count = 0;
-    esp_err_t err = esp_wifi_scan_start(NULL, true);
+    /* Active, 30-80 ms a channel (default up to 120): access points answer a probe within a few ms,
+     * and while connected the radio also returns to its own channel between the others. */
+    const wifi_scan_config_t cfg = {
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active = { .min = 30, .max = 80 },
+    };
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t err = esp_wifi_scan_start(&cfg, true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "scan: %s", esp_err_to_name(err));
         emit(NANO_OTA_EV_SCAN_DONE, NULL, 0);
@@ -218,7 +226,7 @@ static void wifi_scan(void)
         net->secure = recs[i].authmode != WIFI_AUTH_OPEN;
     }
     free(recs);
-    ESP_LOGI(TAG, "scan: %u records, %d networks", n, s_network_count);
+    ESP_LOGI(TAG, "scan: %u records, %d networks, %d ms (%s)", n, s_network_count, (int)((esp_timer_get_time() - t0) / 1000), s_connected ? "connected" : "idle");
     emit(NANO_OTA_EV_SCAN_DONE, NULL, 0);
 }
 
@@ -401,6 +409,7 @@ int nano_ota_start(nano_ota_cb_t cb)
 
 void nano_ota_scan(void)
 {
+    ESP_LOGI(TAG, "scan requested"); /* runs after any command already queued (a check takes seconds) */
     cmd_t c = { .kind = CMD_SCAN };
     post(&c);
 }
