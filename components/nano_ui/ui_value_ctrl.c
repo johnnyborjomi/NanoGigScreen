@@ -173,12 +173,18 @@ ui_value_ctrl_t *ui_value_ctrl_create(lv_obj_t *parent, int32_t y, const ui_valu
     c->sent = -1;
     c->target_raw = -1;
 
-    c->box = ui_box(parent, 0, y, SCREEN_W, UI_VALUE_CTRL_HEIGHT, C_BG);
+    /* Across the parent: the screen, or a page right of a pager column (then flush left, a small right margin). */
+    lv_obj_update_layout(parent);
+    const int32_t w = lv_obj_get_width(parent);
+    const int32_t left = w < SCREEN_W ? 0 : EDGE, right = w < SCREEN_W ? w - 8 : w - EDGE;
+    int32_t step_w = (right - left - 2 * STEP_GAP - 16) / 4;
+    if (step_w > STEP_W) step_w = STEP_W;
+    c->box = ui_box(parent, 0, y, w, UI_VALUE_CTRL_HEIGHT, C_BG);
     lv_obj_set_style_bg_opa(c->box, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(c->box, on_delete, LV_EVENT_DELETE, c);
 
     c->value = ui_label(c->box, &lv_font_montserrat_28, C_TEXT);
-    lv_obj_set_width(c->value, SCREEN_W);
+    lv_obj_set_width(c->value, w);
     lv_obj_set_style_text_align(c->value, LV_TEXT_ALIGN_CENTER, 0);
     if (c->cfg.reset_raw >= 0) {
         lv_obj_set_clickable(c->value, true);
@@ -189,8 +195,8 @@ ui_value_ctrl_t *ui_value_ctrl_create(lv_obj_t *parent, int32_t y, const ui_valu
 
     c->slider = lv_slider_create(c->box);
     lv_slider_set_range(c->slider, c->cfg.pos_min, c->cfg.pos_max);
-    lv_obj_set_size(c->slider, SCREEN_W - 2 * EDGE - 8, 10);
-    lv_obj_set_pos(c->slider, EDGE + 4, SLIDER_DY);
+    lv_obj_set_size(c->slider, right - left - 8, 10);
+    lv_obj_set_pos(c->slider, left + 4, SLIDER_DY);
     lv_obj_set_ext_click_area(c->slider, 10); /* stops ~20 px above the steps */
     lv_obj_set_style_bg_color(c->slider, lv_color_hex(C_PANEL_2), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(c->slider, LV_OPA_COVER, LV_PART_MAIN);
@@ -202,10 +208,9 @@ ui_value_ctrl_t *ui_value_ctrl_create(lv_obj_t *parent, int32_t y, const ui_valu
     lv_obj_add_event_cb(c->slider, on_slider, LV_EVENT_VALUE_CHANGED, c);
     lv_obj_add_event_cb(c->slider, on_slider, LV_EVENT_RELEASED, c);
 
-    const int32_t right = SCREEN_W - EDGE;
-    const int32_t xs[4] = { EDGE, EDGE + STEP_W + STEP_GAP, right - 2 * STEP_W - STEP_GAP, right - STEP_W };
+    const int32_t xs[4] = { left, left + step_w + STEP_GAP, right - 2 * step_w - STEP_GAP, right - step_w };
     for (int i = 0; i < 4; i++) {
-        c->steps[i] = ui_button(c->box, xs[i], STEPS_DY, STEP_W, STEP_H, c->cfg.step_labels[i], &lv_font_montserrat_14, C_PANEL, C_TEXT, on_step, c);
+        c->steps[i] = ui_button(c->box, xs[i], STEPS_DY, step_w, STEP_H, c->cfg.step_labels[i], &lv_font_montserrat_14, C_PANEL, C_TEXT, on_step, c);
         lv_obj_add_event_cb(c->steps[i], ui_on_pressed, LV_EVENT_PRESSED, NULL);
     }
     show(c);
@@ -221,6 +226,14 @@ void ui_value_ctrl_report(ui_value_ctrl_t *c, int raw, int owner)
     if (holding) return;
     c->raw = raw < 0 ? -1 : raw;
     show(c);
+}
+
+void ui_value_ctrl_set(ui_value_ctrl_t *c, int raw, int owner)
+{
+    if (!c) return;
+    if (lv_obj_has_state(c->slider, LV_STATE_PRESSED)) return; /* still being moved: its next write wins */
+    c->local = false;
+    ui_value_ctrl_report(c, raw, owner);
 }
 
 int ui_value_ctrl_value(const ui_value_ctrl_t *c)

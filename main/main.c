@@ -62,17 +62,18 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT, MSG_CAPTURE_VOLUME, MSG_RENAME } msg_kind_t;
+typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT, MSG_CAPTURE_VOLUME, MSG_RENAME, MSG_IR_VIEW, MSG_CAB_SETTING, MSG_CAB_PHASE, MSG_CAB_MIC } msg_kind_t;
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
     char detail[32];
     uint8_t fx_slot;
     bool fx_on;
-    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show, MSG_ROTATE: 180 degrees */
+    bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show, MSG_ROTATE: 180 degrees, MSG_IR_VIEW: open */
     int delta;      /* MSG_TEMPO_DELTA */
-    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT / MSG_RENAME (preset index), MSG_CAPTURE_VOLUME (raw) */
-    char text[NANO_PRESET_NAME_MAX + 1]; /* MSG_RENAME: the new name */
+    uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT / MSG_RENAME (preset index), MSG_CAPTURE_VOLUME (raw), MSG_CAB_SETTING (nano_cab_param_t), MSG_CAB_MIC (position) */
+    float number;   /* MSG_CAB_SETTING: the pedal's 0..1 */
+    char text[NANO_PRESET_NAME_MAX + 1]; /* MSG_RENAME: the new name, MSG_CAB_MIC: the microphone */
     packet_t pkt;
 } app_msg_t;
 
@@ -261,6 +262,15 @@ static void ui_on_rename(uint8_t idx, const char *name)
     xQueueSend(s_queue, &m, 0);
 }
 static void ui_on_capture_volume(uint8_t raw) { app_msg_t m = { .kind = MSG_CAPTURE_VOLUME, .value = raw }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_ir_view(bool open) { app_msg_t m = { .kind = MSG_IR_VIEW, .flag = open }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_cab_setting(uint8_t param, float n) { app_msg_t m = { .kind = MSG_CAB_SETTING, .value = param, .number = n }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_cab_phase(bool inverted) { app_msg_t m = { .kind = MSG_CAB_PHASE, .flag = inverted }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_cab_mic(uint8_t position, const char *mic)
+{
+    app_msg_t m = { .kind = MSG_CAB_MIC, .value = position };
+    snprintf(m.text, sizeof(m.text), "%s", mic);
+    xQueueSend(s_queue, &m, 0);
+}
 static void ui_on_toggle_fx(uint8_t slot, bool on)
 {
     app_msg_t m = { .kind = MSG_TOGGLE_FX, .fx_slot = slot, .fx_on = on };
@@ -575,6 +585,103 @@ static void set_capture_volume(uint8_t raw)
     }
 }
 
+/* IR settings (Level, High pass, Low pass; frames from DrD85, verified 2026-10-08). The state dumps do not carry
+ * them: they are read while the IR tab shows, on open and again for another preset or IR slot. */
+static bool s_ir_view;
+static int s_ir_read_preset = -1, s_ir_read_slot = -1; /* what the last read asked about */
+static int64_t s_ir_read_us, s_ir_written_us;              /* last read sent, last setting written */
+static nano_cab_settings_t s_ir_last;                      /* the last answer (a microphone write names its IR) */
+static bool s_ir_last_valid;
+static bool s_ir_ui_pending, s_ir_ui_fresh;                /* s_ir_last still to be shown (the display was busy) */
+
+/* Hand the last answer to the IR tab; retried from the loop while the display is busy (a dropped answer left
+ * the tab on edits that EXIT had reverted, 2026-10-09). */
+static void ir_push_ui(void)
+{
+    if (!s_ir_ui_pending) return;
+    if (!s_ir_view) {
+        s_ir_ui_pending = false;
+        return;
+    }
+    if (!lvgl_port_lock(50)) return;
+    nano_ui_set_ir_settings(&s_ir_last, s_ir_read_preset, s_ir_ui_fresh);
+    lvgl_port_unlock();
+    s_ir_ui_pending = false;
+}
+
+static void request_ir_settings(void)
+{
+    if (!s_link_ready || !s_state_valid) return;
+    s_ir_read_preset = s_state.active_preset;
+    s_ir_read_slot = s_state.cab_on ? s_state.cab_slot : 0;
+    if (!s_state.cab_on) return; /* an IR that is off has no settings to show (the tab says so) */
+    /* State field 12 as the slot: 1..5 on the pedal's IR list, 6 seen for most presets (2026-10-08). The reply
+     * names the IR it describes, so the log shows whether it is the preset's own. */
+    uint8_t slot = s_state.cab_slot >= 1 ? s_state.cab_slot : 1;
+    uint8_t frame[16];
+    size_t n = nano_build_cab_settings_request(frame, sizeof(frame), slot);
+    if (n && nano_ble_write(frame, n) == 0) {
+        s_ir_read_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "-> IR settings request (preset %u, slot %u)", s_state.active_preset + 1, slot);
+    }
+}
+
+static void ir_settings_reply(const uint8_t *payload, size_t len)
+{
+    nano_cab_settings_t *cs = &s_ir_last;
+    if (!nano_decode_cab_settings(payload, len, cs)) {
+        s_ir_last_valid = false;
+        ESP_LOGW(TAG, "<- IR settings without an IR (%u B)", (unsigned)len);
+        ESP_LOG_BUFFER_HEX(TAG, payload, len < 64 ? len : 64);
+        return;
+    }
+    s_ir_last_valid = true;
+    ESP_LOGI(TAG, "<- IR \"%s\" (%s, kind %u, slot %u): mic \"%s\" pos %u of %u mics, phase %s; n %.4f %.4f %.4f = %.1f dB, %.0f Hz, %.0f Hz",
+             cs->ir_name, cs->factory ? "factory" : "user", (unsigned)cs->kind, s_state.cab_slot, cs->mic, cs->position + 1, cs->mic_count,
+             cs->phase_inverted ? "inverted" : "normal",
+             (double)cs->values[0], (double)cs->values[1], (double)cs->values[2], (double)nano_cab_value(NANO_CAB_LEVEL, cs->values[0]),
+             (double)nano_cab_value(NANO_CAB_HIGH_PASS, cs->values[1]), (double)nano_cab_value(NANO_CAB_LOW_PASS, cs->values[2]));
+    /* Asked after our last write: the pedal's word stands (EXIT reverts edits), even right after a touch. */
+    s_ir_ui_fresh = s_ir_read_us > s_ir_written_us;
+    s_ir_ui_pending = true;
+    ir_push_ui();
+}
+
+static void set_cab_phase(bool inverted)
+{
+    if (!s_link_ready || !s_state_valid || !s_state.cab_on) return;
+    uint8_t frame[8];
+    if (nano_build_cab_phase(frame, sizeof(frame), inverted) && nano_ble_write(frame, sizeof(frame)) == 0) {
+        s_ir_written_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "-> IR phase %s", inverted ? "inverted" : "normal");
+        request_ir_settings(); /* confirms it */
+    }
+}
+
+/* A factory IR's microphone / position: the pedal loads that IR; a read confirms what it took. */
+static void set_cab_mic(uint8_t position, const char *mic)
+{
+    if (!s_link_ready || !s_state_valid || !s_state.cab_on || !s_ir_last_valid || !s_ir_last.factory) return;
+    uint8_t frame[128];
+    size_t n = nano_build_cab_mic(frame, sizeof(frame), s_ir_last.kind, s_ir_last.ir_name, position, mic);
+    if (n && nano_ble_write(frame, n) == 0) {
+        ESP_LOGI(TAG, "-> IR \"%s\" mic \"%s\" position %u", s_ir_last.ir_name, mic, position + 1);
+        request_ir_settings();
+    }
+}
+
+static void set_cab_setting(nano_cab_param_t param, float normalized)
+{
+    if (!s_link_ready || !s_state_valid || !s_state.cab_on) return;
+    uint8_t frame[16];
+    size_t n = nano_build_cab_setting(frame, sizeof(frame), param, normalized);
+    static const char *const names[NANO_CAB_PARAMS] = { "level", "high pass", "low pass" };
+    if (n && nano_ble_write(frame, n) == 0) {
+        s_ir_written_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "-> IR %s %.4f = %.1f", names[param], (double)normalized, (double)nano_cab_value(param, normalized));
+    }
+}
+
 /* Preset rename (RenamePreset, verified 2026-10-08): the pedal stores the name at once and answers
  * type 0x70. The cached name changes only when it says yes. */
 #define RENAME_TIMEOUT_US 3000000
@@ -763,6 +870,8 @@ static void on_state(const nano_state_t *in)
         lvgl_port_unlock();
     }
     exp_push_assignments(st->active_preset);
+    /* IR tab open: another preset or IR (or the IR switched on / off) needs its settings read. */
+    if (s_ir_view && (st->active_preset != s_ir_read_preset || (st->cab_on ? st->cab_slot : 0) != s_ir_read_slot)) request_ir_settings();
     bool switching = pending_preset_active() || s_select_inflight || esp_timer_get_time() - s_select_last_us < SELECT_SETTLE_US;
     if (!s_meta_requested_this_link && !switching && cache_contradicts_state(in)) request_metadata();
     else if (!s_settings_read_this_link && !s_settings_due_us) schedule_settings(SETTINGS_READ_DELAY_MS);
@@ -789,6 +898,10 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     (void)ctx;
     int msg_type;
     size_t plen = nano_split_trailer(body, len, &msg_type);
+    if (msg_type == NANO_MSG_CAB_SETTINGS) {
+        ir_settings_reply(body, plen);
+        return;
+    }
     if (packets > 1 || msg_type == NANO_MSG_DUMP) {
         if (!complete) ESP_LOGW(TAG, "unterminated %u-byte message flushed by timeout", (unsigned)len);
         /* Only a reply to our own metadata request can be metadata; the decoder also checks size / records. */
@@ -848,6 +961,9 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         else if (!s_select_inflight) schedule_state(0);
         break;
     case NANO_EV_CONTROL:
+        /* Unsaved-changes flag flipped (EXIT on the pedal reverts the edits): the IR settings may be back, and the
+         * IR slot with them; the state read below decides which slot to ask about (on_state). */
+        if (ev.msg_type == NANO_MSG_CHANGED && s_ir_view) s_ir_read_slot = -1;
         if (ev.msg_type == NANO_MSG_ENCODER && ev.value >= 0 && s_state_valid) {
             /* Capture / IR scrolled on the pedal: show the cached name now, confirm with a quick dump. */
             const nano_metadata_t *meta = s_meta_valid ? &s_meta_blob.meta : NULL;
@@ -1069,6 +1185,20 @@ static void app_task(void *arg)
             case MSG_RENAME:
                 rename_preset(m.value, m.text);
                 break;
+            case MSG_IR_VIEW:
+                s_ir_view = m.flag;
+                ESP_LOGI(TAG, "IR tab %s, free heap %u B (lowest %u B)", s_ir_view ? "open" : "closed", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
+                if (s_ir_view) request_ir_settings();
+                break;
+            case MSG_CAB_SETTING:
+                if (m.value < NANO_CAB_PARAMS) set_cab_setting((nano_cab_param_t)m.value, m.number);
+                break;
+            case MSG_CAB_PHASE:
+                set_cab_phase(m.flag);
+                break;
+            case MSG_CAB_MIC:
+                if (m.value < NANO_CAB_POSITIONS) set_cab_mic(m.value, m.text);
+                break;
             case MSG_TOGGLE_FX:
                 toggle_fx(m.fx_slot, m.fx_on);
                 break;
@@ -1144,6 +1274,7 @@ static void app_task(void *arg)
             }
         }
         if (!s_update_mode) nano_assembler_tick(&s_asm, now_ms());
+        ir_push_ui();
         if (s_rename_idx >= 0 && esp_timer_get_time() - s_rename_sent_us > RENAME_TIMEOUT_US) {
             ESP_LOGW(TAG, "rename: no answer");
             rename_answer(false, "No answer from the pedal");
@@ -1185,7 +1316,7 @@ void app_main(void)
     uint8_t brightness = brightness_load();
     cyd_backlight_set_level(brightness);
     nano_ui_callbacks_t ui_cb = {
-        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_capture_volume = ui_on_capture_volume, .on_rename_preset = ui_on_rename, .on_toggle_fx = ui_on_toggle_fx,
+        .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_capture_volume = ui_on_capture_volume, .on_ir_view = ui_on_ir_view, .on_cab_setting = ui_on_cab_setting, .on_cab_phase = ui_on_cab_phase, .on_cab_mic = ui_on_cab_mic, .on_rename_preset = ui_on_rename, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
         .on_toggle_gate = ui_on_toggle_gate, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute, .on_expression_show = ui_on_expression_show,

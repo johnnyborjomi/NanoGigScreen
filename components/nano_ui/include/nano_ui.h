@@ -5,7 +5,8 @@
  * Main view: top bar (link status, tempo, gate, menu button), preset row
  * (prev button, bank label + name, next button), capture and IR lines, five
  * FX tiles in category colours. Tap a tile to toggle that block. LIST (right of
- * the capture / IR lines) opens the presets list; the capture line opens the capture page.
+ * the capture / IR lines) opens the presets list; holding the capture or IR line opens its tab of the
+ * Capture / IR page.
  *
  * Every call must hold the LVGL lock (lvgl_port_lock) except nano_ui_create,
  * which the caller also wraps. Callbacks fire on the LVGL task: post to a
@@ -32,7 +33,8 @@ typedef enum {
     NANO_VIEW_CONNECT,     /* no live state: "put the pedal in connect mode" / Connect button */
     NANO_VIEW_UPDATE,      /* firmware update over Wi-Fi (Bluetooth is off while it shows; closing restarts) */
     NANO_VIEW_PRESETS,     /* presets list, one bank per page: tap one to select it */
-    NANO_VIEW_CAPTURE,     /* the capture: name, on / off, volume (tap the capture line) */
+    NANO_VIEW_CAPTURE,     /* the capture: name, on / off, volume (tap the capture line); a tab next to the IR */
+    NANO_VIEW_IR,          /* the IR: name, on / off, phase, Level / High pass / Low pass, microphone (tap the IR line) */
     NANO_VIEW_RENAME,      /* rename a preset (long press on its name): open with nano_ui_open_rename */
 } nano_view_t;
 
@@ -62,6 +64,15 @@ typedef struct {
     void (*on_rename_preset)(uint8_t index, const char *name);
     /* Capture page: new capture volume, raw 0..255. NULL = the page shows the volume read-only. */
     void (*on_capture_volume)(uint8_t raw);
+    /* IR tab shown (true) / left (false): the app reads the IR settings while it shows (nano_ui_set_ir_settings),
+     * again when the preset changes. */
+    void (*on_ir_view)(bool open);
+    /* IR tab: a new setting, `param` = nano_cab_param_t, the pedal's 0..1. NULL = the tab is read-only. */
+    void (*on_cab_setting)(uint8_t param, float normalized);
+    /* IR tab: phase inverted or not. NULL = no Phase button. */
+    void (*on_cab_phase)(bool inverted);
+    /* IR tab, factory IRs: microphone (one of the read's list) and position 0..5 picked. NULL = read-only. */
+    void (*on_cab_mic)(uint8_t position, const char *mic);
     /* A tile was tapped: slot 0..4 = pre1..post3, `on` = its state as shown. */
     void (*on_toggle_fx)(uint8_t slot, bool on);
     /* The GATE button was tapped; `on` = its state as shown. */
@@ -122,6 +133,12 @@ void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta);
 void nano_ui_set_footswitches(const uint8_t fs[4]);
 /* Full refresh from a state dump plus cached metadata (meta may be NULL). */
 void nano_ui_set_state(const nano_state_t *state, const nano_metadata_t *meta);
+/* IR settings as the pedal reported them for `preset` (nano_decode_cab_settings); NULL = not known (yet). The IR
+ * tab shows them while the IR is on. `fresh` = read after the tab's last change: shown even while a control
+ * would hold its own value against older reports (EXIT on the pedal reverts edits). */
+void nano_ui_set_ir_settings(const nano_cab_settings_t *settings, int preset, bool fresh);
+/* IR tab pager (for previews / tests). */
+void nano_ui_ir_page(int index);
 /* Tempo line: `tapping` = the pedal is in tap tempo mode (highlighted). 0 BPM clears it. */
 void nano_ui_set_tempo(float bpm, bool tapping);
 /* Grey everything out while there is no link. */
