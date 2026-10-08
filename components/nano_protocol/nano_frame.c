@@ -193,3 +193,103 @@ size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mu
     memcpy(out, frame, 17);
     return 17;
 }
+
+size_t nano_build_cab_settings_request(uint8_t *out, size_t cap, uint8_t slot)
+{
+    if (cap < 10 || slot < 1 || slot > 0x7F) return 0;
+    const uint8_t frame[10] = { 0x08, 0xC0, 0x18, 0x00, 0x20, (uint8_t)(slot - 1), 0x5F, 0x00, 0x00, 0x00 };
+    memcpy(out, frame, 10);
+    return 10;
+}
+
+size_t nano_build_cab_setting(uint8_t *out, size_t cap, nano_cab_param_t param, float normalized)
+{
+    if (cap < 11 || param < 0 || param >= NANO_CAB_PARAMS) return 0;
+    float n = normalized < 0 ? 0 : normalized > 1 ? 1 : normalized;
+    out[0] = 9;
+    out[1] = 0xC0;
+    out[2] = (uint8_t)((5 + param) << 3 | 5); /* fixed32 */
+    memcpy(out + 3, &n, 4);                   /* little-endian, like the pedal */
+    out[7] = 0x5E;
+    out[8] = 0x00;
+    out[9] = 0x00;
+    out[10] = 0x00;
+    return 11;
+}
+
+size_t nano_build_cab_phase(uint8_t *out, size_t cap, bool inverted)
+{
+    if (cap < 8) return 0;
+    const uint8_t frame[8] = { 0x06, 0xC0, 0x40, inverted ? 1 : 0, 0x5E, 0x00, 0x00, 0x00 };
+    memcpy(out, frame, 8);
+    return 8;
+}
+
+size_t nano_build_cab_mic(uint8_t *out, size_t cap, uint32_t kind, const char *ir_name, uint8_t position, const char *mic)
+{
+    size_t nl = ir_name ? strlen(ir_name) : 0, ml = mic ? strlen(mic) : 0;
+    if (!nl || !ml || nl > 100 || ml > 100 || kind > 0x7F || position > 0x7F) return 0;
+    size_t inner = 2 + 2 + nl + 2 + 2 + ml; /* every length and value fits one varint byte */
+    size_t len = 2 + 2 + inner + 4;
+    if (inner > 0x7F || len - 2 > 0x7F || cap < len) return 0;
+    size_t i = 0;
+    out[i++] = (uint8_t)(len - 2);
+    out[i++] = 0xC0;
+    out[i++] = 0x1A; /* field 3: the IR */
+    out[i++] = (uint8_t)inner;
+    out[i++] = 0x08;
+    out[i++] = (uint8_t)kind;
+    out[i++] = 0x12;
+    out[i++] = (uint8_t)nl;
+    memcpy(out + i, ir_name, nl);
+    i += nl;
+    out[i++] = 0x18; /* position, written even when 0 */
+    out[i++] = position;
+    out[i++] = 0x22;
+    out[i++] = (uint8_t)ml;
+    memcpy(out + i, mic, ml);
+    i += ml;
+    out[i++] = 0x5E;
+    out[i++] = 0x00;
+    out[i++] = 0x00;
+    out[i++] = 0x00;
+    return i;
+}
+
+#define CAB_LEVEL_CURVE 3.5f
+#define CAB_FILTER_CURVE (5.0f / 3.0f)
+
+float nano_cab_value(nano_cab_param_t param, float n)
+{
+    n = n < 0 ? 0 : n > 1 ? 1 : n;
+    switch (param) {
+    case NANO_CAB_LEVEL: return NANO_CAB_LEVEL_MIN_DB + powf(n, 1 / CAB_LEVEL_CURVE) * (NANO_CAB_LEVEL_MAX_DB - NANO_CAB_LEVEL_MIN_DB);
+    case NANO_CAB_HIGH_PASS: return NANO_CAB_HIGH_PASS_MIN_HZ + powf(n, CAB_FILTER_CURVE) * (NANO_CAB_HIGH_PASS_MAX_HZ - NANO_CAB_HIGH_PASS_MIN_HZ);
+    case NANO_CAB_LOW_PASS: return NANO_CAB_LOW_PASS_MIN_HZ + powf(n, CAB_FILTER_CURVE) * (NANO_CAB_LOW_PASS_MAX_HZ - NANO_CAB_LOW_PASS_MIN_HZ);
+    default: return 0;
+    }
+}
+
+float nano_cab_normalized(nano_cab_param_t param, float v)
+{
+    float n;
+    switch (param) {
+    case NANO_CAB_LEVEL: {
+        float x = (v - NANO_CAB_LEVEL_MIN_DB) / (NANO_CAB_LEVEL_MAX_DB - NANO_CAB_LEVEL_MIN_DB);
+        n = x > 0 ? powf(x, CAB_LEVEL_CURVE) : 0;
+        break;
+    }
+    case NANO_CAB_HIGH_PASS: {
+        float x = (v - NANO_CAB_HIGH_PASS_MIN_HZ) / (NANO_CAB_HIGH_PASS_MAX_HZ - NANO_CAB_HIGH_PASS_MIN_HZ);
+        n = x > 0 ? powf(x, 1 / CAB_FILTER_CURVE) : 0;
+        break;
+    }
+    case NANO_CAB_LOW_PASS: {
+        float x = (v - NANO_CAB_LOW_PASS_MIN_HZ) / (NANO_CAB_LOW_PASS_MAX_HZ - NANO_CAB_LOW_PASS_MIN_HZ);
+        n = x > 0 ? powf(x, 1 / CAB_FILTER_CURVE) : 0;
+        break;
+    }
+    default: return 0;
+    }
+    return n < 0 ? 0 : n > 1 ? 1 : n;
+}
