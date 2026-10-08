@@ -962,11 +962,11 @@ static void presets_open(void)
  */
 #define CAP_DRAG_MS 100
 #define CAP_HOLD_MS 1500
-/* The touch driver already holds a resting finger still (cyd_board's jitter filter); what is left
- * is the odd one-pixel step: a move that turns back needs CAP_TURN raw steps, one that carries on
- * in the same direction CAP_MOVE. */
+/* The slider runs in tenths of a dB (~1.3 per pixel). The touch driver already holds a resting
+ * finger still (cyd_board's jitter filter); what is left is the odd one-pixel step: a move that
+ * turns back needs CAP_TURN tenths, one that carries on in the same direction CAP_MOVE. */
 #define CAP_MOVE 1
-#define CAP_TURN 3
+#define CAP_TURN 4
 #define CAP_STEP_W 62
 #define CAP_STEP_H 40
 #define CAP_STEP_GAP 6
@@ -982,6 +982,12 @@ static int s_cap_drag_dir;         /* direction of the last accepted move: -1, 0
 /* A run of step taps aims at exact readouts: the target of the last tap and the raw value it landed
  * on, so a tap that could only get close (-1.9 for -2.0) does not shift the next one. */
 static int s_cap_target_tenths, s_cap_target_raw = -1;
+
+/* Slider position for a raw value: its dB in tenths (rounded, so the knob sits where the value is). */
+static int capture_slider_pos(int raw)
+{
+    return (int)lroundf(nano_capture_volume_db((uint8_t)raw) * 10.0f);
+}
 
 static bool capture_writable(void) { return s_cb.on_capture_volume != NULL && s_cap_volume >= 0; }
 
@@ -1005,7 +1011,7 @@ static void capture_refresh(void)
     lv_obj_set_style_text_color(s_cap_name_l, lv_color_hex(s_cap_on ? C_TEXT : C_OFF_TEXT), 0);
     /* Leave the slider alone while a finger is on it. */
     if (!lv_obj_has_state(s_cap_slider, LV_STATE_PRESSED)) {
-        lv_slider_set_value(s_cap_slider, s_cap_volume < 0 ? 128 : s_cap_volume, LV_ANIM_OFF);
+        lv_slider_set_value(s_cap_slider, capture_slider_pos(s_cap_volume < 0 ? 128 : s_cap_volume), LV_ANIM_OFF);
         capture_show_value(s_cap_volume);
     }
     bool w = capture_writable();
@@ -1048,17 +1054,32 @@ static void capture_set_volume(int raw)
 }
 
 /*
- * Step by `tenths` from the value aimed at (the readout, unless this continues a run of taps): the
- * raw value whose readout is closest to the target, at least one raw step in that direction. Where
- * the pedal has no step for the exact readout (below 0 dB its steps are 0.11-0.18 dB, under -12 dB
- * coarser still) it lands on the nearest one, and the next tap still aims at the exact value.
+ * +-1 dB: from the value aimed at (the readout, unless this continues a run of taps) to the raw value
+ * whose readout is closest to the target, so a run lands on whole dB (from -12 dB up; the pedal's
+ * steps are coarser below). +-0.1: the pedal's next step. Below 0 dB its steps are 0.11-0.18 dB, so
+ * some tenths do not exist (-6.3, -6.6, ...) and a fine step shows 0.2 there.
  */
 static void on_capture_step(lv_event_t *e)
 {
     if (!capture_writable()) return;
     int tenths = (int)(intptr_t)lv_event_get_user_data(e);
     int dir = tenths > 0 ? 1 : -1;
-    int base = s_cap_volume == s_cap_target_raw ? s_cap_target_tenths : nano_capture_volume_tenths((uint8_t)s_cap_volume);
+    int shown = nano_capture_volume_tenths((uint8_t)s_cap_volume);
+    if (abs(tenths) < 10) {
+        /* Fine step: the next raw value whose readout differs, the smallest change the pedal can make
+         * (0.1 dB; 0.2 where it has no step for the tenth in between, under ~0 dB). */
+        int raw = s_cap_volume;
+        while (raw + dir >= 0 && raw + dir <= 255) {
+            raw += dir;
+            if (nano_capture_volume_tenths((uint8_t)raw) != shown) break;
+        }
+        if (raw == s_cap_volume) return; /* end of the range */
+        s_cap_target_raw = -1; /* a following +-1 dB starts from what is shown */
+        capture_set_volume(raw);
+        return;
+    }
+    /* Whole dB: a run of taps aims at exact values, each landing on the closest readout. */
+    int base = s_cap_volume == s_cap_target_raw ? s_cap_target_tenths : shown;
     int target = base + tenths;
     if (target < -240) target = -240;
     if (target > 120) target = 120;
@@ -1082,9 +1103,9 @@ static void on_capture_slider(lv_event_t *e)
 {
     if (!capture_writable()) return;
     lv_event_code_t code = lv_event_get_code(e);
-    int v = lv_slider_get_value(s_cap_slider);
+    int v = lv_slider_get_value(s_cap_slider); /* tenths of a dB */
     if (code == LV_EVENT_PRESSED) {
-        s_cap_drag_v = s_cap_volume;
+        s_cap_drag_v = capture_slider_pos(s_cap_volume);
         s_cap_drag_dir = 0;
     } else if (code == LV_EVENT_VALUE_CHANGED) {
         int d = v - s_cap_drag_v, dir = d > 0 ? 1 : -1;
@@ -1095,22 +1116,30 @@ static void on_capture_slider(lv_event_t *e)
         }
         s_cap_drag_v = v;
         s_cap_drag_dir = dir;
-        capture_show_value(v);
-        s_cap_volume = v;
+        int raw = nano_capture_volume_raw(v / 10.0f);
+        capture_show_value(raw);
+        s_cap_volume = raw;
+        s_cap_target_raw = -1;
         s_cap_local = true;
         s_cap_local_ms = lv_tick_get();
-        if (lv_tick_elaps(s_cap_sent_ms) >= CAP_DRAG_MS) capture_send(v);
+        if (lv_tick_elaps(s_cap_sent_ms) >= CAP_DRAG_MS) capture_send(raw);
     } else if (code == LV_EVENT_RELEASED) {
         lv_slider_set_value(s_cap_slider, s_cap_drag_v, LV_ANIM_OFF);
-        capture_set_volume(s_cap_drag_v); /* the last accepted position, whatever the throttle skipped */
+        capture_set_volume(nano_capture_volume_raw(s_cap_drag_v / 10.0f)); /* the last accepted position */
     }
 }
 
-/* Double tap on the value: back to 0.0 dB (raw 128). */
+/* Double tap on the value: back to 0.0 dB (raw 128). Detected here from two clicks within
+ * CAP_DOUBLE_MS anywhere on the value: LVGL's own double click also wants both taps within 10 px,
+ * which the resistive panel's taps did not manage. */
+#define CAP_DOUBLE_MS 500
 static void on_capture_reset(lv_event_t *e)
 {
     (void)e;
-    if (!capture_writable()) return;
+    static uint32_t s_last_click_ms;
+    bool second = s_last_click_ms && lv_tick_elaps(s_last_click_ms) <= CAP_DOUBLE_MS;
+    s_last_click_ms = second ? 0 : lv_tick_get();
+    if (!second || !capture_writable()) return;
     s_cap_target_raw = -1; /* the next step starts from 0.0 */
     capture_set_volume(128);
 }
@@ -1139,12 +1168,12 @@ static void build_capture(lv_obj_t *scr)
     lv_obj_set_style_text_align(s_cap_value, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(s_cap_value, 0, 92);
     lv_obj_set_clickable(s_cap_value, true);
-    lv_obj_set_ext_click_area(s_cap_value, 6);
+    lv_obj_set_ext_click_area(s_cap_value, 10);
     lv_obj_add_event_cb(s_cap_value, on_pressed, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(s_cap_value, on_capture_reset, LV_EVENT_DOUBLE_CLICKED, NULL);
+    lv_obj_add_event_cb(s_cap_value, on_capture_reset, LV_EVENT_CLICKED, NULL);
     const int32_t slider_y = 140, steps_y = 182;
     s_cap_slider = lv_slider_create(s_capture_view);
-    lv_slider_set_range(s_cap_slider, 0, 255);
+    lv_slider_set_range(s_cap_slider, -240, 120); /* tenths of a dB: even in dB, like the readout */
     lv_obj_set_size(s_cap_slider, SCREEN_W - 2 * CAP_EDGE - 8, 10);
     lv_obj_set_pos(s_cap_slider, CAP_EDGE + 4, slider_y);
     lv_obj_set_ext_click_area(s_cap_slider, 10); /* stops ~20 px above the steps */
