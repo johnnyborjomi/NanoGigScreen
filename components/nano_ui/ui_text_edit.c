@@ -79,19 +79,11 @@ ui_text_edit_t *ui_text_edit_create(lv_obj_t *parent, int32_t y, const ui_text_e
     lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(box, on_delete, LV_EVENT_DELETE, t);
 
-    t->field = lv_textarea_create(box);
-    lv_obj_set_pos(t->field, EDGE, 0);
-    lv_obj_set_size(t->field, SCREEN_W - 2 * EDGE, FIELD_H);
-    lv_textarea_set_one_line(t->field, true);
+    t->field = ui_text_field(box, EDGE, 0, SCREEN_W - 2 * EDGE, FIELD_H, &lv_font_montserrat_20);
     lv_textarea_set_max_length(t->field, (uint32_t)cfg->max_len);
     if (cfg->placeholder) lv_textarea_set_placeholder_text(t->field, cfg->placeholder);
     lv_textarea_set_text(t->field, cfg->text ? cfg->text : "");
-    lv_obj_set_style_bg_color(t->field, lv_color_hex(C_PANEL), 0);
-    lv_obj_set_style_border_color(t->field, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_text_color(t->field, lv_color_hex(C_TEXT), 0);
-    lv_obj_set_style_text_font(t->field, &lv_font_montserrat_20, 0);
     lv_obj_set_style_pad_ver(t->field, 5, 0);
-    lv_obj_add_state(t->field, LV_STATE_FOCUSED); /* shows the cursor */
     lv_obj_add_event_cb(t->field, on_changed, LV_EVENT_VALUE_CHANGED, t);
     lv_obj_add_event_cb(t->field, on_ready, LV_EVENT_READY, t); /* OK and Enter: the keyboard forwards them */
 
@@ -99,19 +91,7 @@ ui_text_edit_t *ui_text_edit_create(lv_obj_t *parent, int32_t y, const ui_text_e
     lv_obj_set_pos(t->status, EDGE + 2, STATUS_DY);
     lv_obj_set_width(t->status, SCREEN_W - 2 * EDGE);
 
-    t->kb = lv_keyboard_create(box);
-    lv_obj_set_size(t->kb, SCREEN_W, SCREEN_H - y - KB_DY);
-    lv_obj_align(t->kb, LV_ALIGN_BOTTOM_MID, 0, 0); /* bottom-aligned by default: pos would be an offset */
-    lv_keyboard_set_textarea(t->kb, t->field);
-    lv_obj_set_style_bg_color(t->kb, lv_color_hex(C_BG), LV_PART_MAIN);
-    lv_obj_set_style_pad_all(t->kb, 2, LV_PART_MAIN);
-    lv_obj_set_style_pad_gap(t->kb, 3, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(t->kb, lv_color_hex(C_PANEL_2), LV_PART_ITEMS);
-    lv_obj_set_style_text_color(t->kb, lv_color_hex(C_TEXT), LV_PART_ITEMS);
-    lv_obj_set_style_border_width(t->kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_shadow_width(t->kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_radius(t->kb, 5, LV_PART_ITEMS);
-    lv_obj_add_event_cb(t->kb, ui_on_pressed, LV_EVENT_PRESSED, NULL);
+    t->kb = ui_keyboard(box, SCREEN_H - y - KB_DY, t->field);
 
     show_count(t);
     return t;

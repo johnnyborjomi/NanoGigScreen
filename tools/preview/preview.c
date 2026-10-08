@@ -292,6 +292,21 @@ int main(int argc, char **argv)
         nano_ui_rename_result(0, false, "The pedal did not accept this name");
         render(200);
         save(dir, "9k-rename-refused");
+        /* The keyboard's other pages. */
+        lv_obj_t *kb = NULL;
+        for (lv_obj_t *o = lv_screen_active(); o && !kb;) {
+            /* depth-first search for the keyboard */
+            lv_obj_t *stack[64]; int sp = 0; stack[sp++] = o; o = NULL;
+            while (sp && !kb) { lv_obj_t *x = stack[--sp]; if (lv_obj_check_type(x, &lv_keyboard_class)) kb = x; for (uint32_t i = 0; i < lv_obj_get_child_count(x) && sp < 64; i++) stack[sp++] = lv_obj_get_child(x, i); }
+        }
+        if (kb) {
+            lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_SPECIAL);
+            render(200);
+            save(dir, "9l-keyboard-symbols");
+            lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_USER_1);
+            render(200);
+            save(dir, "9m-keyboard-symbols2");
+        }
         nano_ui_show(NANO_VIEW_MAIN);
     }
 

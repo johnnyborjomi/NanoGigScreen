@@ -47,6 +47,12 @@ lv_obj_t *ui_box(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, u
 lv_obj_t *ui_dot(lv_obj_t *parent, int32_t x, int32_t y, int32_t d);
 /* A flat button with a centred label (lv_obj_get_child(b, 0)); `cb` runs on LV_EVENT_CLICKED. */
 lv_obj_t *ui_button(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, const char *text, const lv_font_t *font, uint32_t bg, uint32_t fg, lv_event_cb_t cb, void *user);
+/* A one-line text field in the NanoGig look, with a blinking accent cursor. */
+lv_obj_t *ui_text_field(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, const lv_font_t *font);
+/* A keyboard across the bottom of `parent`, `h` tall, typing into `ta`: four rows with bigger keys
+ * than LVGL's default (no Enter, no hide key: OK sends LV_EVENT_READY to `ta`), letters, digits and
+ * every printable ASCII symbol over two symbol pages ("1#", then "#+="). */
+lv_obj_t *ui_keyboard(lv_obj_t *parent, int32_t h, lv_obj_t *ta);
 /* LV_EVENT_PRESSED handler that logs where a press started (touch debugging on the serial log). */
 void ui_on_pressed(lv_event_t *e);
 

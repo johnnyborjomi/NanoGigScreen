@@ -802,6 +802,7 @@ static void build_settings(lv_obj_t *scr)
 static pager_t s_presets_pager;
 static lv_obj_t *s_preset_rows[PRESET_ROWS_MAX], *s_preset_row_tag[PRESET_ROWS_MAX], *s_preset_row_name[PRESET_ROWS_MAX];
 static int32_t s_presets_top, s_presets_h;
+static int s_presets_return_bank = -1; /* reopen on this bank (back from renaming one of its presets) */
 
 static void on_preset_row_clicked(lv_event_t *e)
 {
@@ -817,7 +818,9 @@ static void on_preset_row_long(lv_event_t *e)
 {
     int row = (int)(uintptr_t)lv_event_get_user_data(e);
     int idx = s_presets_pager.current * s_per_bank + row;
-    if (idx < NANO_PRESET_COUNT) nano_ui_open_rename((uint8_t)idx);
+    if (idx >= NANO_PRESET_COUNT) return;
+    s_presets_return_bank = s_presets_pager.current;
+    nano_ui_open_rename((uint8_t)idx);
 }
 
 /* Fill the rows for one bank: as many as presets per bank, sized to share the page height. */
@@ -896,11 +899,13 @@ static void build_presets(lv_obj_t *scr)
     }
 }
 
-/* Open on the bank of the shown preset. */
+/* Open on the bank of the shown preset, or the one a rename started from. */
 static void presets_open(void)
 {
     int banks = (NANO_PRESET_COUNT + s_per_bank - 1) / s_per_bank;
-    pager_set_count(&s_presets_pager, banks, s_preset / s_per_bank);
+    int bank = s_presets_return_bank >= 0 && s_presets_return_bank < banks ? s_presets_return_bank : s_preset / s_per_bank;
+    s_presets_return_bank = -1;
+    pager_set_count(&s_presets_pager, banks, bank);
 }
 
 /*
@@ -1679,10 +1684,10 @@ static void on_upd_keyboard(lv_event_t *e)
         const char *pw = lv_textarea_get_text(s_upd_pass_ta);
         if (strlen(pw) < 8) return; /* WPA2 needs 8 or more: keep typing */
         upd_start_join(s_upd_pick, pw);
-    } else if (code == LV_EVENT_CANCEL) {
-        upd_show_panel(UPD_PANEL_NETWORKS);
     }
 }
+
+static void on_upd_pass_back(lv_event_t *e) { (void)e; upd_show_panel(UPD_PANEL_NETWORKS); }
 
 /* Four bars, lit by signal strength. */
 static void make_bars(lv_obj_t *parent, int32_t x, int32_t y, int8_t rssi)
@@ -1763,39 +1768,22 @@ static void build_update(lv_obj_t *scr)
     lv_obj_set_flex_flow(s_upd_net_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_upd_net_list, 4, 0);
 
-    /* Password: field + show/hide, keyboard under it (OK joins, the keyboard key goes back). */
+    /* Password: field + show/hide, keyboard under it (OK joins, "< Networks" goes back). */
     s_upd_pass = ui_box(s_update, 0, top, SCREEN_W, SCREEN_H - top, C_BG);
     s_upd_pass_title = ui_label(s_upd_pass, &lv_font_montserrat_12, C_MUTED);
     lv_obj_set_pos(s_upd_pass_title, UPD_X, 2);
-    lv_obj_set_width(s_upd_pass_title, UPD_W);
+    lv_obj_set_size(s_upd_pass_title, UPD_W - 96, lv_font_get_line_height(&lv_font_montserrat_12));
     lv_label_set_long_mode(s_upd_pass_title, LV_LABEL_LONG_DOT);
-    s_upd_pass_ta = lv_textarea_create(s_upd_pass);
-    lv_obj_set_pos(s_upd_pass_ta, UPD_X, 20);
-    lv_obj_set_size(s_upd_pass_ta, UPD_W - 48, UPD_PASS_TA_H);
-    lv_textarea_set_one_line(s_upd_pass_ta, true);
+    lv_obj_t *pass_back = ui_button(s_upd_pass, SCREEN_W - UPD_X - 90, 0, 90, 18, LV_SYMBOL_LEFT " Networks", &lv_font_montserrat_12, C_BG, C_ACCENT, on_upd_pass_back, NULL);
+    lv_obj_set_ext_click_area(pass_back, 4);
+    s_upd_pass_ta = ui_text_field(s_upd_pass, UPD_X, 20, UPD_W - 48, UPD_PASS_TA_H, &lv_font_montserrat_14);
     lv_textarea_set_password_mode(s_upd_pass_ta, true);
     lv_textarea_set_max_length(s_upd_pass_ta, 63);
     lv_textarea_set_placeholder_text(s_upd_pass_ta, "8 characters or more");
-    lv_obj_set_style_bg_color(s_upd_pass_ta, lv_color_hex(C_PANEL), 0);
-    lv_obj_set_style_border_color(s_upd_pass_ta, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_text_color(s_upd_pass_ta, lv_color_hex(C_TEXT), 0);
-    lv_obj_set_style_text_font(s_upd_pass_ta, &lv_font_montserrat_14, 0);
     lv_obj_t *eye = ui_button(s_upd_pass, SCREEN_W - UPD_X - 42, 20, 42, UPD_PASS_TA_H, LV_SYMBOL_EYE_OPEN, &lv_font_montserrat_14, C_PANEL, C_MUTED, on_upd_eye, NULL);
     lv_obj_set_style_radius(eye, 7, 0);
-    s_upd_kb = lv_keyboard_create(s_upd_pass);
-    lv_obj_set_size(s_upd_kb, SCREEN_W, SCREEN_H - UPD_KB_Y);
-    lv_obj_align(s_upd_kb, LV_ALIGN_BOTTOM_MID, 0, 0); /* the keyboard is bottom-aligned by default: pos would be an offset */
-    lv_keyboard_set_textarea(s_upd_kb, s_upd_pass_ta);
-    lv_obj_set_style_bg_color(s_upd_kb, lv_color_hex(C_BG), LV_PART_MAIN);
-    lv_obj_set_style_pad_all(s_upd_kb, 2, LV_PART_MAIN);
-    lv_obj_set_style_pad_gap(s_upd_kb, 3, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_upd_kb, lv_color_hex(C_PANEL_2), LV_PART_ITEMS);
-    lv_obj_set_style_text_color(s_upd_kb, lv_color_hex(C_TEXT), LV_PART_ITEMS);
-    lv_obj_set_style_border_width(s_upd_kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_shadow_width(s_upd_kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_radius(s_upd_kb, 5, LV_PART_ITEMS);
+    s_upd_kb = ui_keyboard(s_upd_pass, SCREEN_H - UPD_KB_Y, s_upd_pass_ta);
     lv_obj_add_event_cb(s_upd_kb, on_upd_keyboard, LV_EVENT_READY, NULL);
-    lv_obj_add_event_cb(s_upd_kb, on_upd_keyboard, LV_EVENT_CANCEL, NULL);
 
     upd_refresh_wifi();
     nano_ui_update_status(NANO_UPDATE_BUSY, "Starting Wi-Fi", 0);
