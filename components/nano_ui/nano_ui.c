@@ -5,9 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "nano_models.h"
 #include "ui_common.h"
+#include "ui_text_edit.h"
 #include "ui_value_ctrl.h"
 
 /* Slot colours for the preset label (1A red, 1B orange, 1C green, 1D cyan ...). */
@@ -44,6 +46,10 @@ static lv_obj_t *s_scr;
 static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
 static lv_obj_t *s_capture_view; /* built on open, freed on close, like the presets list */
 static lv_obj_t *s_presets; /* built on open, freed on close: ~10 KB of heap the gig needs more */
+static lv_obj_t *s_rename_view; /* built on open, freed on close (the keyboard) */
+static ui_text_edit_t *s_rename_edit; /* freed with the page */
+static uint8_t s_rename_idx;
+static nano_view_t s_rename_from = NANO_VIEW_MAIN; /* where "<" goes back to */
 static lv_obj_t *s_update; /* built on first open: the keyboard and the network list cost heap the gig never needs */
 static lv_obj_t *s_tempo_big, *s_tempo_hint;
 static float s_tempo_bpm;
@@ -416,6 +422,9 @@ static void on_bank_step(lv_event_t *e)
 
 /* ---- main view ------------------------------------------------------------ */
 
+static void on_preset_name_long(lv_event_t *e);
+static void show_view(nano_view_t view, bool notify);
+
 static void build_main(lv_obj_t *scr)
 {
     s_main = ui_box(scr, 0, 0, SCREEN_W, SCREEN_H, C_BG);
@@ -453,6 +462,13 @@ static void build_main(lv_obj_t *scr)
     s_preset_name = ui_label(s_main, &lv_font_montserrat_32, C_TEXT);
     lv_label_set_long_mode(s_preset_name, LV_LABEL_LONG_WRAP);
     lv_label_set_text(s_preset_name, "NanoGig");
+    /* Long press on the label or the name: rename (a tap does nothing, so no keyboard by accident). */
+    lv_obj_t *name_parts[2] = { s_preset_label, s_preset_name };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_set_clickable(name_parts[i], true);
+        lv_obj_add_event_cb(name_parts[i], ui_on_pressed, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(name_parts[i], on_preset_name_long, LV_EVENT_LONG_PRESSED, NULL);
+    }
     for (int i = 0; i < 4; i++) {
         lv_obj_t *b = ui_box(s_main, 0, 0, BADGE_W, BADGE_H, FS_BG[i]);
         lv_obj_set_style_radius(b, 4, 0);
@@ -796,6 +812,14 @@ static void on_preset_row_clicked(lv_event_t *e)
     nano_ui_show(s_base_view);
 }
 
+/* Long press on a row: rename that preset ("<" comes back to this list). */
+static void on_preset_row_long(lv_event_t *e)
+{
+    int row = (int)(uintptr_t)lv_event_get_user_data(e);
+    int idx = s_presets_pager.current * s_per_bank + row;
+    if (idx < NANO_PRESET_COUNT) nano_ui_open_rename((uint8_t)idx);
+}
+
 /* Fill the rows for one bank: as many as presets per bank, sized to share the page height. */
 static void presets_show_bank(int bank)
 {
@@ -862,7 +886,8 @@ static void build_presets(lv_obj_t *scr)
         lv_obj_set_style_bg_color(row, lv_color_hex(C_TEXT), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(row, LV_OPA_30, LV_STATE_PRESSED);
         lv_obj_add_event_cb(row, ui_on_pressed, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(row, on_preset_row_clicked, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(row, on_preset_row_clicked, LV_EVENT_SHORT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(row, on_preset_row_long, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)i);
         s_preset_row_tag[i] = ui_label(row, &lv_font_montserrat_14, C_TEXT);
         s_preset_row_name[i] = ui_label(row, &lv_font_montserrat_14, C_TEXT);
         lv_label_set_long_mode(s_preset_row_name[i], LV_LABEL_LONG_DOT);
@@ -957,6 +982,74 @@ static void build_capture(lv_obj_t *scr)
         lv_label_set_text(hint, "Read-only for now");
     }
 }
+
+/*
+ * Rename page: a ui_text_edit with the preset's name. The pedal stores a new name at once (no save
+ * needed); the page waits for its answer (nano_ui_rename_result) and closes on success.
+ */
+static void on_rename_back(lv_event_t *e) { (void)e; nano_ui_show(s_rename_from); }
+
+/* No two presets with the same name, ignoring letter case (DrD85's controller enforces this; the
+ * pedal's own rule is still to be checked), and no space at either end. */
+static bool rename_validate(const char *text, char *why, size_t cap, void *user)
+{
+    (void)user;
+    if (text[0] == ' ' || text[strlen(text) - 1] == ' ') {
+        snprintf(why, cap, "No space at the start or end");
+        return false;
+    }
+    for (int i = 0; s_meta && i < NANO_PRESET_COUNT; i++) {
+        if (i != s_rename_idx && strcasecmp(s_meta->presets[i].name, text) == 0) {
+            snprintf(why, cap, "Preset %d already has this name", i + 1);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void rename_submit(const char *text, void *user)
+{
+    (void)user;
+    const char *old = s_meta ? s_meta->presets[s_rename_idx].name : "";
+    if (strcmp(text, old) == 0 || !s_cb.on_rename_preset) {
+        nano_ui_show(s_rename_from); /* nothing to write */
+        return;
+    }
+    s_cb.on_rename_preset(s_rename_idx, text);
+}
+
+static void build_rename(lv_obj_t *scr)
+{
+    char label[8], title[32];
+    nano_preset_label(s_rename_idx, s_per_bank, s_label_style, label, sizeof(label));
+    snprintf(title, sizeof(title), "Rename preset %s", label);
+    s_rename_view = make_overlay_cb(scr, title, on_rename_back, on_close, NULL);
+    const ui_text_edit_cfg_t cfg = {
+        .text = s_meta ? s_meta->presets[s_rename_idx].name : "",
+        .placeholder = "Preset name",
+        .min_len = 1, .max_len = NANO_PRESET_NAME_MAX,
+        .validate = rename_validate,
+        .on_submit = rename_submit,
+    };
+    s_rename_edit = ui_text_edit_create(s_rename_view, TOP_H + 8, &cfg);
+}
+
+void nano_ui_open_rename(uint8_t index)
+{
+    if (index >= NANO_PRESET_COUNT || !s_cb.on_rename_preset) return;
+    s_rename_idx = index;
+    s_rename_from = s_view == NANO_VIEW_PRESETS ? NANO_VIEW_PRESETS : s_base_view;
+    show_view(NANO_VIEW_RENAME, true);
+}
+
+void nano_ui_rename_result(uint8_t index, bool ok, const char *msg)
+{
+    if (s_view != NANO_VIEW_RENAME || index != s_rename_idx) return;
+    if (ok) nano_ui_show(s_rename_from);
+    else ui_text_edit_set_error(s_rename_edit, msg);
+}
+
+static void on_preset_name_long(lv_event_t *e) { (void)e; nano_ui_open_rename(s_preset); }
 
 static void build_tuner(lv_obj_t *scr)
 {
@@ -1194,6 +1287,14 @@ static void show_view(nano_view_t view, bool notify)
         s_capture_view = NULL;
         s_cap_vol = NULL; /* freed with the page */
     }
+    if (view == NANO_VIEW_RENAME) {
+        build_rename(s_scr);
+        lv_obj_set_hidden(s_rename_view, false);
+    } else if (s_rename_view) {
+        lv_obj_delete_async(s_rename_view);
+        s_rename_view = NULL;
+        s_rename_edit = NULL; /* freed with the page */
+    }
     lv_obj_set_hidden(s_tuner, view != NANO_VIEW_TUNER);
     lv_obj_set_hidden(s_tempo_view, view != NANO_VIEW_TEMPO);
     lv_obj_set_hidden(s_connect, view != NANO_VIEW_CONNECT);
@@ -1222,7 +1323,7 @@ void nano_ui_set_connected(bool live)
     s_base_view = live ? NANO_VIEW_MAIN : NANO_VIEW_CONNECT;
     if (live && s_view == NANO_VIEW_CONNECT) show_view(NANO_VIEW_MAIN, false);
     /* Down: the pedal's views make no claims any more; the menu and settings can stay open. */
-    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO || s_view == NANO_VIEW_CAPTURE)) show_view(NANO_VIEW_CONNECT, false);
+    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO || s_view == NANO_VIEW_CAPTURE || s_view == NANO_VIEW_RENAME)) show_view(NANO_VIEW_CONNECT, false);
 }
 
 void nano_ui_show(nano_view_t view)

@@ -79,6 +79,7 @@ static void noop_fx(uint8_t s, bool on) { (void)s; (void)on; }
 static void noop_b(bool b) { (void)b; }
 static void noop_u8(uint8_t v) { (void)v; }
 static void noop_i(int v) { (void)v; }
+static void noop_rename(uint8_t i, const char *n) { (void)i; (void)n; }
 
 int main(int argc, char **argv)
 {
@@ -92,7 +93,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8 };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -283,6 +284,14 @@ int main(int argc, char **argv)
         nano_ui_set_state(&lng, &meta);
         render(200);
         save(dir, "9i-capture-page-off");
+        nano_ui_show(NANO_VIEW_MAIN);
+        /* Rename page (long press on the name): 20 characters, then the pedal's refusal. */
+        nano_ui_open_rename(0);
+        render(200);
+        save(dir, "9j-rename");
+        nano_ui_rename_result(0, false, "The pedal did not accept this name");
+        render(200);
+        save(dir, "9k-rename-refused");
         nano_ui_show(NANO_VIEW_MAIN);
     }
 

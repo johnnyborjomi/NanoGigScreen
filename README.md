@@ -10,6 +10,8 @@ and shows, with no phone on the floor:
 - the five FX blocks with their model names, lit in the Cortex Cloud category colours
 - the capture and IR names with on/off dots, gate state and tempo
 - preset switching with the ◀ ▶ buttons beside the name
+- preset rename: long-press the preset name (or a row in the presets list) for a keyboard; the pedal
+  stores the new name at once
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
 - menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),
   settings (presets per bank and label style, outputs 1/2 mute, expression indicators; page 2:
@@ -19,8 +21,8 @@ and shows, with no phone on the floor:
   pedal without powering the screen off. A tuner started on the pedal opens the view too.
 
 Everything about the protocol is provisional and firmware-specific (verified on NanOS 2.2.1,
-September 2026). The pedal accepts several Bluetooth clients at once, so the screen can run
-next to the NanoGig app; Cortex Cloud must be disconnected first.
+September 2026). The pedal takes one Bluetooth connection at a time: close Cortex Cloud and the
+NanoGig app first, or use Menu → Disconnect to hand the pedal over to them.
 
 ## Status
 
@@ -46,12 +48,14 @@ components/
     nano_ui.c            the views (gig, menu, settings, presets, capture, tuner, tempo, connect, update)
     ui_common.h/.c       palette, screen size, fonts, label / box / button constructors
     ui_value_ctrl.h/.c   reusable parameter control: value, slider, fine / coarse steps, double tap reset
+    ui_text_edit.h/.c    reusable text entry: one-line field, keyboard, length / custom checks, saving state
 docs/HARDWARE.md         board facts, pinout, mounting notes
 ```
 
 New pages build on `ui_common.h`. A new adjustable pedal parameter is a `ui_value_ctrl_cfg_t`:
 its raw range, the mapping to the slider and the readout, the step sizes and a change callback
-(see the capture volume in `nano_ui.c`). The control is freed with the page that holds it.
+(see the capture volume in `nano_ui.c`). A text the pedal stores is a `ui_text_edit_cfg_t` (see the
+preset rename). Both are freed with the page that holds them.
 
 ## Build
 
@@ -176,5 +180,5 @@ Things to check on the bench, in order:
 
 ## License
 
-MIT, like NanoGig. Protocol knowledge builds on choldy/nano-cortex-web-editor (MIT) and
-rixrix/deskop-nano-cortex (Apache-2.0). Not affiliated with Neural DSP.
+MIT, like NanoGig. Protocol knowledge builds on choldy/nano-cortex-web-editor (MIT),
+rixrix/deskop-nano-cortex (Apache-2.0) and DrD85/nano-cortex-controller (MIT: the preset rename). Not affiliated with Neural DSP.

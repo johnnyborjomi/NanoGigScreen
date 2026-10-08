@@ -82,6 +82,7 @@ typedef enum {
     NANO_EV_SETTINGS,          /* device settings reply (type 0x42): outputs_muted */
     NANO_EV_OUTPUTS_MUTE_ACK,  /* ack to the outputs-mute write (type 0x44) */
     NANO_EV_TAP_TEMPO,         /* tempo while tapping / when the tap tempo mode ends (2026-09-26) */
+    NANO_EV_RENAME_REPLY,      /* reply to a preset rename (type 0x70): preset, ok */
 } nano_event_kind_t;
 
 /* One FX amount range on the pedal's 0..255 scale (Cortex Cloud shows 0..100 %). */
@@ -111,7 +112,8 @@ typedef struct {
 typedef struct {
     nano_event_kind_t kind;
     int msg_type;              /* trailer type, -1 when none */
-    uint8_t preset;            /* PRESET_CHANGED */
+    uint8_t preset;            /* PRESET_CHANGED, RENAME_REPLY */
+    bool ok;                   /* RENAME_REPLY: field 4 = 1 */
     uint8_t footswitch[4];     /* PRESET_CHANGED */
     uint8_t position;          /* EXPRESSION */
     char note[4];              /* TUNER_PITCH: "A", "C#", ... */

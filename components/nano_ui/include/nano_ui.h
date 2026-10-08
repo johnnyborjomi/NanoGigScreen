@@ -33,6 +33,7 @@ typedef enum {
     NANO_VIEW_UPDATE,      /* firmware update over Wi-Fi (Bluetooth is off while it shows; closing restarts) */
     NANO_VIEW_PRESETS,     /* presets list, one bank per page: tap one to select it */
     NANO_VIEW_CAPTURE,     /* the capture: name, on / off, volume (tap the capture line) */
+    NANO_VIEW_RENAME,      /* rename a preset (long press on its name): open with nano_ui_open_rename */
 } nano_view_t;
 
 /* What the firmware update view shows under the Wi-Fi line. */
@@ -56,6 +57,9 @@ typedef struct {
     void (*on_next_preset)(void);
     /* A preset was picked in the presets list (0..63). */
     void (*on_select_preset)(uint8_t index);
+    /* Rename page: write `name` (1..NANO_PRESET_NAME_MAX chars) to preset `index` (0..63); answer with
+     * nano_ui_rename_result. NULL = no long press opens the page. */
+    void (*on_rename_preset)(uint8_t index, const char *name);
     /* Capture page: new capture volume, raw 0..255. NULL = the page shows the volume read-only. */
     void (*on_capture_volume)(uint8_t raw);
     /* A tile was tapped: slot 0..4 = pre1..post3, `on` = its state as shown. */
@@ -130,6 +134,11 @@ void nano_ui_set_stale(bool stale);
 void nano_ui_set_connected(bool live);
 /* Switch views (the tuner view calls on_tuner on open / close). */
 void nano_ui_show(nano_view_t view);
+/* Open the rename page for preset `index` (0..63). */
+void nano_ui_open_rename(uint8_t index);
+/* The pedal's answer to on_rename_preset: ok closes the page (the new name comes with the next
+ * nano_ui_set_preset); otherwise `msg` shows and the name can be edited again. */
+void nano_ui_rename_result(uint8_t index, bool ok, const char *msg);
 nano_view_t nano_ui_view(void);
 /* Tuner reading; `note` NULL = silence. */
 void nano_ui_set_tuner(const char *note, float cents, bool in_tune);

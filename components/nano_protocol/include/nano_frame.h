@@ -54,8 +54,9 @@ enum {
     NANO_MSG_EXP_ASSIGN_REPLY = 0x3d,
     NANO_MSG_EXPRESSION = 0x40,      /* pedal position 0..254 */
     NANO_MSG_SETTINGS = 0x42,
-    NANO_MSG_OUTPUTS_MUTE_ACK = 0x44,
-    NANO_MSG_CHANGED = 0x73,         /* generic "something changed" */
+    NANO_MSG_OUTPUTS_MUTE_ACK = 0x44, /* any settings write answers this (UpdateSettingsResponse) */
+    NANO_MSG_RENAME_REPLY = 0x70,    /* reply to nano_build_preset_rename */
+    NANO_MSG_CHANGED = 0x73,         /* unsaved changes on / off (field 3) */
     NANO_MSG_TUNER = 0x7f,           /* tuner on/off (our write and the pedal's report) */
     NANO_MSG_TUNER_PITCH = 0x80,     /* ~30/s while a note sounds */
     NANO_MSG_TAP_TEMPO = 0x91,       /* tap tempo: field 3 = 1 while the mode is on, field 5 = BPM (f32); field 3 absent = mode left */
@@ -127,6 +128,15 @@ uint8_t nano_capture_volume_raw(float db);
  * (raw 101 = -3.07 dB reads "-3.0" there; all five readings above agree), with 0.01 dB of slack
  * for the fit at the boundaries (raw 110 = -1.995 reads -2.0, not -1.9). */
 int nano_capture_volume_tenths(uint8_t raw);
+
+/*
+ * Rename a preset (the pedal's RenamePreset, frame from DrD85/nano-cortex-controller, verified on the
+ * user's pedal 2026-10-08): `<len> C0 08 01 18 <preset> 22 <n> <name> 6F 00 00 00`. The pedal stores the
+ * name at once (no save needed) and answers type 0x70 `08 06 18 <preset> 20 <1 = ok>`.
+ * Returns bytes written, or 0 for an empty name, one longer than NANO_PRESET_NAME_MAX or a bad index.
+ */
+#define NANO_PRESET_NAME_MAX 20
+size_t nano_build_preset_rename(uint8_t *out, size_t cap, uint8_t preset_index, const char *name);
 
 /*
  * Read a preset's expression pedal assignments (Cortex Cloud's request on its Expression Pedal
