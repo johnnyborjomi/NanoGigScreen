@@ -39,9 +39,18 @@ mounting.
 ## Layout
 
 ```
-main/                    app: sync rules, NVS metadata cache, packet queue, touch → preset select
+main/                    the app task: one module per concern (see main.c's header)
+  app.h/.c               shared pedal state, app_send, screen sync (ui_mark / ui_sync)
+  link.c                 session: link up / down, state / metadata / settings reads
+  pedal_in.c             reassembly, decoding and routing of what the pedal sends
+  preset_select.c block_edits.c tempo.c tuner.c expression.c rename.c   one feature each
+  remote_page.c          settings read while their page shows: read, match, show, write
+  ir_page.c              the IR tab as a remote page
+  settings.c             the screen's settings and the name cache in flash
+  update_mode.c          Wi-Fi firmware update, image rollback
 components/
-  nano_protocol/         plain C, no ESP dependencies: framing, assembler, protobuf walker,
+  nano_protocol/         plain C, no ESP dependencies: framing, assembler, protobuf reader / writer,
+                         frame builders (nano_build), dB / Hz scales (nano_scales),
                          state / metadata / event decoders, FX model catalogue, category palette
     test/                host tests with hardware fixtures (cc + CMake)
   nano_ble/              NimBLE central: scan → connect → MTU 517 → a002 → subscribe c305 → write c304
@@ -59,6 +68,11 @@ New pages build on `ui_common.h`. A new adjustable pedal parameter is a `ui_valu
 its raw range, the mapping to the slider and the readout, the step sizes and a change callback
 (see the capture volume in `nano_ui.c`). A text the pedal stores is a `ui_text_edit_cfg_t` (see the
 preset rename). Both are freed with the page that holds them.
+
+On the app side, settings the pedal reads out on request (not in its state dumps) are a remote page
+(`main/remote_page.h`): a read frame, a decoder and a show callback; the helper reads on open and on
+every preset / key change, matches replies to reads, times writes and retries the screen push. The
+IR tab (`main/ir_page.c`) is the example.
 
 ## Build
 
