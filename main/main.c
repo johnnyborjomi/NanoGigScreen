@@ -31,7 +31,7 @@
 #include "nano_assembler.h"
 #include "nano_ble.h"
 #include "nano_decode.h"
-#include "nano_frame.h"
+#include "nano_build.h"
 #include "nano_ota.h"
 #include "nano_proto.h"
 #include "nano_ui.h"
@@ -865,10 +865,7 @@ static void log_state_fields(const uint8_t *body, size_t len)
     nano_proto_iter_init(&it, body, len);
     while (nano_proto_next(&it, &f) && k < sizeof(line) - 24) {
         if (f.wire == NANO_WIRE_VARINT) k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%llu ", (unsigned)f.field, (unsigned long long)f.value);
-        else if (f.wire == NANO_WIRE_FIXED32) {
-            float v; memcpy(&v, f.raw, 4);
-            k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%.1ff ", (unsigned)f.field, v);
-        } else k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=[%u] ", (unsigned)f.field, (unsigned)f.len);
+        else if (f.wire == NANO_WIRE_FIXED32) k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%.1ff ", (unsigned)f.field, (double)nano_field_f32(&f)); else k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=[%u] ", (unsigned)f.field, (unsigned)f.len);
     }
     ESP_LOGI(TAG, "   fields: %s", line);
 }
