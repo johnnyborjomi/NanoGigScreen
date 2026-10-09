@@ -12,6 +12,7 @@
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "sdkconfig.h"
 #include "services/gap/ble_svc_gap.h"
 
 static const char *TAG = "nano_ble";
@@ -20,7 +21,7 @@ static const char *TAG = "nano_ble";
 #define UUID_CHAR_C304 0xc304
 #define UUID_CHAR_C305 0xc305
 #define UUID_CCCD 0x2902
-#define PREFERRED_MTU 517
+#define PREFERRED_MTU CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU /* 517: the pedal sends 512-byte notifications */
 #define CONNECT_TIMEOUT_MS 30000
 #define SETUP_TIMEOUT_MS 10000 /* connected to subscribed; the pedal takes well under a second */
 

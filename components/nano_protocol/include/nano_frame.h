@@ -24,9 +24,6 @@ extern "C" {
 #define NANO_FLAG_END 0x8000u
 #define NANO_LENGTH_MASK 0x3fffu
 
-/* The pedal sends 512-byte notifications: ask for this MTU right after connecting. */
-#define NANO_PREFERRED_MTU 517
-
 /* Room for any frame this firmware writes (the longest is an IR microphone choice, under 140 B). */
 #define NANO_FRAME_MAX 160
 

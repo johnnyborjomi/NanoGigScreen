@@ -98,12 +98,19 @@ the same build and flash commands without the wrapper.
 `sdkconfig.defaults` carries the required settings: NimBLE central only, preferred MTU 517
 with a larger mbuf pool, custom partition table (two 1.94 MB OTA slots), Wi-Fi + HTTPS for
 updates (Wi-Fi fast paths out of IRAM: Bluetooth fills it), LVGL 16-bit colour with the
-Montserrat 12/14/20/28/40 fonts. `idf.py menuconfig → NanoGig Screen board` selects the panel
+Montserrat 12/14/20/24/28/32/40 fonts. `idf.py menuconfig → NanoGig Screen board` selects the panel
 controller (ILI9341 vs ST7789 on some two-USB batches), colour inversion, 180° rotation and
 touch mirroring.
 
-Managed components (fetched on first build): `lvgl/lvgl ^9.2`, `espressif/esp_lvgl_port ^2.4`,
-`espressif/esp_lcd_ili9341`, `atanisoft/esp_lcd_touch_xpt2046`.
+Size: the image is built with `-Os` except LVGL, which keeps `-O2` for drawing speed (top-level
+`CMakeLists.txt`); only the LVGL widgets the screen creates are compiled in; TLS is client only,
+Wi-Fi has no access point or WPA enterprise, NimBLE has no security manager (the pedal does not
+pair). About 1.5 MB, under 80% of an OTA slot. After pulling a change to `sdkconfig.defaults`,
+delete the local `sdkconfig` (`rm sdkconfig && idf.py build`): an existing one keeps its old values.
+
+Managed components (fetched on first build, versions pinned in `dependencies.lock`):
+`lvgl/lvgl ^9.2`, `espressif/esp_lvgl_port ^2.4`, `espressif/esp_lcd_ili9341`,
+`atanisoft/esp_lcd_touch_xpt2046`.
 
 ### UI preview on the host
 
@@ -122,6 +129,13 @@ open out
 cd components/nano_protocol/test
 cmake -B build && cmake --build build && ./build/test_protocol
 ```
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push and pull request: the protocol tests and the
+preview under AddressSanitizer + UndefinedBehaviorSanitizer, the firmware build in
+`espressif/idf:v5.3.2`, and a size limit (the image must stay under 92% of an OTA slot). The
+rendered preview PNGs are kept as a build artifact.
 
 ## Firmware updates over Wi-Fi
 

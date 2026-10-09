@@ -94,7 +94,12 @@ static void model_id_hex(const nano_field_t *f, nano_fx_slot_t *slot)
 {
     if (f->wire != NANO_WIRE_VARINT && f->wire != NANO_WIRE_BYTES) return;
     if (f->len * 2 >= sizeof(slot->id)) return;
-    for (size_t i = 0; i < f->len; i++) sprintf(slot->id + i * 2, "%02X", f->raw[i]);
+    static const char HEX[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < f->len; i++) {
+        slot->id[i * 2] = HEX[f->raw[i] >> 4];
+        slot->id[i * 2 + 1] = HEX[f->raw[i] & 0xf];
+    }
+    slot->id[f->len * 2] = '\0';
     slot->model = nano_lookup_fx_model(slot->id);
 }
 
