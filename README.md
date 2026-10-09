@@ -39,26 +39,45 @@ mounting.
 ## Layout
 
 ```
-main/                    app: sync rules, NVS metadata cache, packet queue, touch → preset select
+main/                    the app task: one module per concern (see main.c's header)
+  app.h/.c               shared pedal state, app_send, screen sync (ui_mark / ui_sync)
+  link.c                 session: link up / down, state / metadata / settings reads
+  pedal_in.c             reassembly, decoding and routing of what the pedal sends
+  preset_select.c block_edits.c tempo.c tuner.c expression.c rename.c   one feature each
+  remote_page.c          settings read while their page shows: read, match, show, write
+  ir_page.c              the IR tab as a remote page
+  settings.c             the screen's settings and the name cache in flash
+  update_mode.c          Wi-Fi firmware update, image rollback
 components/
-  nano_protocol/         plain C, no ESP dependencies: framing, assembler, protobuf walker,
+  nano_protocol/         plain C, no ESP dependencies: framing, assembler, protobuf reader / writer,
+                         frame builders (nano_build), dB / Hz scales (nano_scales),
                          state / metadata / event decoders, FX model catalogue, category palette
     test/                host tests with hardware fixtures (cc + CMake)
   nano_ble/              NimBLE central: scan → connect → MTU 517 → a002 → subscribe c305 → write c304
   nano_ota/              update mode: Wi-Fi join (NVS credentials), HTTPS image check + install, rollback
   cyd_board/             ESP32-2432S028 bring-up: SPI panel, XPT2046 touch, backlight, LED, LVGL port
   nano_ui/               LVGL 9 gig screen
-    nano_ui.c            the views (gig, menu, settings, presets, capture, tuner, tempo, connect, update)
-    ui_common.h/.c       palette, screen size, fonts, label / box / button constructors
+    nano_ui.c            page switching (one ui_page_t per view, ui_internal.h), create, shared setters
+    page_*.c             one page each: main (the gig view), connect, menu, settings, presets,
+                         source (Capture / IR tabs; ir_tab.c), rename, tuner, tempo, update
+    ui_widgets.h/.c      overlay with title bar, pager column, settings rows, status line
+    ui_common.h/.c       palette, screen size, fonts, label / box / button / keyboard constructors
     ui_value_ctrl.h/.c   reusable parameter control: value, slider, fine / coarse steps, double tap reset
     ui_text_edit.h/.c    reusable text entry: one-line field, keyboard, length / custom checks, saving state
 docs/HARDWARE.md         board facts, pinout, mounting notes
 ```
 
-New pages build on `ui_common.h`. A new adjustable pedal parameter is a `ui_value_ctrl_cfg_t`:
+A new page is a `page_*.c` with a `ui_page_t` (build, destroy, enter, leave; see `ui_internal.h`)
+registered in `nano_ui.c`; pages are built on open and freed on close unless marked `keep`. Pages
+build on `ui_widgets.h` and `ui_common.h`. A new adjustable pedal parameter is a `ui_value_ctrl_cfg_t`:
 its raw range, the mapping to the slider and the readout, the step sizes and a change callback
 (see the capture volume in `nano_ui.c`). A text the pedal stores is a `ui_text_edit_cfg_t` (see the
 preset rename). Both are freed with the page that holds them.
+
+On the app side, settings the pedal reads out on request (not in its state dumps) are a remote page
+(`main/remote_page.h`): a read frame, a decoder and a show callback; the helper reads on open and on
+every preset / key change, matches replies to reads, times writes and retries the screen push. The
+IR tab (`main/ir_page.c`) is the example.
 
 ## Build
 
@@ -79,12 +98,19 @@ the same build and flash commands without the wrapper.
 `sdkconfig.defaults` carries the required settings: NimBLE central only, preferred MTU 517
 with a larger mbuf pool, custom partition table (two 1.94 MB OTA slots), Wi-Fi + HTTPS for
 updates (Wi-Fi fast paths out of IRAM: Bluetooth fills it), LVGL 16-bit colour with the
-Montserrat 12/14/20/28/40 fonts. `idf.py menuconfig → NanoGig Screen board` selects the panel
+Montserrat 12/14/20/24/28/32/40 fonts. `idf.py menuconfig → NanoGig Screen board` selects the panel
 controller (ILI9341 vs ST7789 on some two-USB batches), colour inversion, 180° rotation and
 touch mirroring.
 
-Managed components (fetched on first build): `lvgl/lvgl ^9.2`, `espressif/esp_lvgl_port ^2.4`,
-`espressif/esp_lcd_ili9341`, `atanisoft/esp_lcd_touch_xpt2046`.
+Size: the image is built with `-Os` except LVGL, which keeps `-O2` for drawing speed (top-level
+`CMakeLists.txt`); only the LVGL widgets the screen creates are compiled in; TLS is client only,
+Wi-Fi has no access point or WPA enterprise, NimBLE has no security manager (the pedal does not
+pair). About 1.5 MB, under 80% of an OTA slot. After pulling a change to `sdkconfig.defaults`,
+delete the local `sdkconfig` (`rm sdkconfig && idf.py build`): an existing one keeps its old values.
+
+Managed components (fetched on first build, versions pinned in `dependencies.lock`):
+`lvgl/lvgl ^9.2`, `espressif/esp_lvgl_port ^2.4`, `espressif/esp_lcd_ili9341`,
+`atanisoft/esp_lcd_touch_xpt2046`.
 
 ### UI preview on the host
 
@@ -103,6 +129,13 @@ open out
 cd components/nano_protocol/test
 cmake -B build && cmake --build build && ./build/test_protocol
 ```
+
+### CI
+
+`.github/workflows/ci.yml`: every push runs the protocol tests and the preview (LVGL cloned at
+the tag `dependencies.lock` pins) under AddressSanitizer + UndefinedBehaviorSanitizer and keeps the
+rendered PNGs as a build artifact. Pull requests also build the firmware from a clean checkout in
+`espressif/idf:v5.3.2` and fail it above 92% of an OTA slot.
 
 ## Firmware updates over Wi-Fi
 

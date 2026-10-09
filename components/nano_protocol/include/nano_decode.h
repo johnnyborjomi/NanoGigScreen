@@ -14,6 +14,7 @@
 
 #include "nano_frame.h"
 #include "nano_models.h"
+#include "nano_scales.h"
 
 #ifdef __cplusplus
 extern "C" {

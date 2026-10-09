@@ -189,7 +189,6 @@ ui_value_ctrl_t *ui_value_ctrl_create(lv_obj_t *parent, int32_t y, const ui_valu
     if (c->cfg.reset_raw >= 0) {
         lv_obj_set_clickable(c->value, true);
         lv_obj_set_ext_click_area(c->value, 10);
-        lv_obj_add_event_cb(c->value, ui_on_pressed, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(c->value, on_value_click, LV_EVENT_CLICKED, c);
     }
 
@@ -203,7 +202,6 @@ ui_value_ctrl_t *ui_value_ctrl_create(lv_obj_t *parent, int32_t y, const ui_valu
     lv_obj_set_style_bg_color(c->slider, lv_color_hex(C_ON), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(c->slider, lv_color_hex(C_TEXT), LV_PART_KNOB);
     lv_obj_set_style_pad_all(c->slider, 6, LV_PART_KNOB);
-    lv_obj_add_event_cb(c->slider, ui_on_pressed, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(c->slider, on_slider, LV_EVENT_PRESSED, c);
     lv_obj_add_event_cb(c->slider, on_slider, LV_EVENT_VALUE_CHANGED, c);
     lv_obj_add_event_cb(c->slider, on_slider, LV_EVENT_RELEASED, c);
@@ -211,7 +209,6 @@ ui_value_ctrl_t *ui_value_ctrl_create(lv_obj_t *parent, int32_t y, const ui_valu
     const int32_t xs[4] = { left, left + step_w + STEP_GAP, right - 2 * step_w - STEP_GAP, right - step_w };
     for (int i = 0; i < 4; i++) {
         c->steps[i] = ui_button(c->box, xs[i], STEPS_DY, step_w, STEP_H, c->cfg.step_labels[i], &lv_font_montserrat_14, C_PANEL, C_TEXT, on_step, c);
-        lv_obj_add_event_cb(c->steps[i], ui_on_pressed, LV_EVENT_PRESSED, NULL);
     }
     show(c);
     return c;

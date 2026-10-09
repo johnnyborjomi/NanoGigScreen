@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 project(nanogig_preview C)
 set(CMAKE_C_STANDARD 11)
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-set(LVGL ${ROOT}/managed_components/lvgl__lvgl)
+set(LVGL ${ROOT}/managed_components/lvgl__lvgl CACHE PATH "LVGL sources: the firmware build fetches them; CI clones the locked tag")
 
 file(GLOB_RECURSE LVGL_SRC ${LVGL}/src/*.c)
 list(FILTER LVGL_SRC EXCLUDE REGEX "/src/drivers/")
@@ -15,7 +15,8 @@ target_compile_options(lvgl PRIVATE -w -O1)
 
 add_subdirectory(${ROOT}/components/nano_protocol nano_protocol)
 
-add_library(nano_ui STATIC ${ROOT}/components/nano_ui/nano_ui.c ${ROOT}/components/nano_ui/ui_common.c ${ROOT}/components/nano_ui/ui_value_ctrl.c ${ROOT}/components/nano_ui/ui_text_edit.c ${ROOT}/components/nano_ui/fonts/montserrat_medium_10.c ${ROOT}/components/nano_ui/fonts/montserrat_medium_12.c ${ROOT}/components/nano_ui/fonts/montserrat_bold_10.c)
+file(GLOB NANO_UI_SRC ${ROOT}/components/nano_ui/*.c ${ROOT}/components/nano_ui/fonts/*.c)
+add_library(nano_ui STATIC ${NANO_UI_SRC})
 target_include_directories(nano_ui PUBLIC ${ROOT}/components/nano_ui/include)
 target_link_libraries(nano_ui PUBLIC lvgl nano_protocol)
 

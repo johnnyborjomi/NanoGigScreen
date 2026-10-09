@@ -133,7 +133,8 @@ void nano_ui_set_preset(uint8_t index, const nano_metadata_t *meta);
 void nano_ui_set_footswitches(const uint8_t fs[4]);
 /* Full refresh from a state dump plus cached metadata (meta may be NULL). */
 void nano_ui_set_state(const nano_state_t *state, const nano_metadata_t *meta);
-/* IR settings as the pedal reported them for `preset` (nano_decode_cab_settings); NULL = not known (yet). The IR
+/* IR settings as the pedal reported them for `preset` (nano_decode_cab_settings); NULL = the pedal answered
+ * without any (the tab says so; a state for another preset resets it to "Reading..."). The IR
  * tab shows them while the IR is on. `fresh` = read after the tab's last change: shown even while a control
  * would hold its own value against older reports (EXIT on the pedal reverts edits). */
 void nano_ui_set_ir_settings(const nano_cab_settings_t *settings, int preset, bool fresh);
@@ -184,6 +185,11 @@ void nano_ui_update_set_wifi(const char *ssid);
 void nano_ui_update_status(nano_update_state_t state, const char *text, int percent);
 /* Update view: show the network picker ("Searching" while `scanning`, else the list). */
 void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, bool scanning);
+
+/* Previews and tests: the first visible object showing `text` (a button's label gives the button), and the
+ * keyboard showing, or NULL. */
+lv_obj_t *nano_ui_find(const char *text);
+lv_obj_t *nano_ui_find_keyboard(void);
 
 #ifdef __cplusplus
 }

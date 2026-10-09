@@ -45,7 +45,7 @@ lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color);
 lv_obj_t *ui_box(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t bg);
 /* A round status dot, C_DIM until coloured. */
 lv_obj_t *ui_dot(lv_obj_t *parent, int32_t x, int32_t y, int32_t d);
-/* A flat button with a centred label (lv_obj_get_child(b, 0)); `cb` runs on LV_EVENT_CLICKED. */
+/* A flat button with a centred label (lv_obj_get_child(b, 0)); `cb` runs on LV_EVENT_CLICKED (NULL = none). */
 lv_obj_t *ui_button(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, const char *text, const lv_font_t *font, uint32_t bg, uint32_t fg, lv_event_cb_t cb, void *user);
 /* A one-line text field in the NanoGig look, with a thin blinking accent caret between the letters. */
 lv_obj_t *ui_text_field(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, const lv_font_t *font);
@@ -53,8 +53,12 @@ lv_obj_t *ui_text_field(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32
  * than LVGL's default (no Enter, no hide key: OK sends LV_EVENT_READY to `ta`), letters, digits and
  * every printable ASCII symbol over two symbol pages ("1#", then "#+="). */
 lv_obj_t *ui_keyboard(lv_obj_t *parent, int32_t h, lv_obj_t *ta);
-/* LV_EVENT_PRESSED handler that logs where a press started (touch debugging on the serial log). */
-void ui_on_pressed(lv_event_t *e);
+/* Log where every press on `disp`'s touch input starts (touch debugging on the serial log). */
+void ui_log_presses(lv_display_t *disp);
+/* Previews and tests: the first visible object showing `text` (a label's clickable parent: its button), or of
+ * class `cls`, under `root`. */
+lv_obj_t *ui_find_text(lv_obj_t *root, const char *text);
+lv_obj_t *ui_find_class(lv_obj_t *root, const lv_obj_class_t *cls);
 
 #ifdef __cplusplus
 }

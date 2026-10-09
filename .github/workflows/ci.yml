@@ -1,0 +1,63 @@
+# Every push: the protocol tests and the host preview under AddressSanitizer + UndefinedBehaviorSanitizer
+# (no ESP-IDF needed). Pull requests also build the firmware from a clean checkout and check its size; that
+# job pulls the ESP-IDF image from Docker Hub, so it runs once per PR update, not on every push.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  protocol-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Protocol tests (ASan + UBSan)
+        run: |
+          cmake -S components/nano_protocol/test -B build/test \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
+          cmake --build build/test
+          ./build/test/test_protocol
+
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The LVGL release pinned in dependencies.lock ("9.6.0~1" -> tag v9.6.0), straight from GitHub.
+      - name: Fetch LVGL
+        run: |
+          version=$(python3 -c "import re; s=open('dependencies.lock').read(); print(re.search(r'^  lvgl/lvgl:\n(?:    .*\n)*?    version: (\S+)', s, re.M).group(1).split('~')[0])")
+          git clone --depth 1 --branch "v$version" https://github.com/lvgl/lvgl build/lvgl
+      - name: Host preview (ASan + UBSan)
+        run: |
+          cmake -S tools/preview -B build/preview -DLVGL="$PWD/build/lvgl" \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
+          cmake --build build/preview -j"$(nproc)"
+          ASAN_OPTIONS=detect_leaks=0 ./build/preview/preview build/preview-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview
+          path: build/preview-out/*.png
+
+  firmware:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.3.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py build
+      - name: Size limit (92% of the OTA slot)
+        shell: bash
+        run: |
+          python3 - <<'EOF'
+          import os, sys
+          slot = next(int(row.split(',')[4], 0) for row in open('partitions.csv') if row.startswith('ota_0'))
+          size = os.path.getsize('build/nanogig_screen.bin')
+          print(f'image {size} bytes, slot {slot} bytes: {100 * size / slot:.1f}%')
+          sys.exit(0 if size <= slot * 0.92 else 'image above 92% of the OTA slot')
+          EOF

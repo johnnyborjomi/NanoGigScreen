@@ -33,9 +33,11 @@ static void sanitize_name(char *s)
 
 static void string_field(const uint8_t *d, size_t len, uint32_t field, char *out, size_t cap)
 {
-    nano_first_string(d, len, field, out, cap);
+    nano_get_text(d, len, field, out, cap);
     sanitize_name(out);
 }
+
+static uint8_t clamp_u8(uint64_t v) { return v > 255 ? 255 : (uint8_t)v; }
 
 /* ---- metadata ---------------------------------------------------------- */
 
@@ -87,77 +89,115 @@ bool nano_decode_metadata(const uint8_t *body, size_t len, nano_metadata_t *out)
 
 /* ---- state ------------------------------------------------------------- */
 
-static void model_id_hex(const uint8_t *d, size_t len, uint32_t field, nano_fx_slot_t *slot)
+/* An FX slot's model id as hex. Both encodings seen: varint (raw value bytes) and length-delimited bytes. */
+static void model_id_hex(const nano_field_t *f, nano_fx_slot_t *slot)
 {
-    slot->id[0] = '\0';
-    slot->model = NULL;
-    nano_field_t f;
-    if (!nano_first_field(d, len, field, &f)) return;
-    /* Both encodings seen: varint (raw value bytes) and length-delimited bytes. */
-    if (f.wire != NANO_WIRE_VARINT && f.wire != NANO_WIRE_BYTES) return;
-    if (f.len * 2 >= sizeof(slot->id)) return;
-    for (size_t i = 0; i < f.len; i++) sprintf(slot->id + i * 2, "%02X", f.raw[i]);
+    if (f->wire != NANO_WIRE_VARINT && f->wire != NANO_WIRE_BYTES) return;
+    if (f->len * 2 >= sizeof(slot->id)) return;
+    static const char HEX[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < f->len; i++) {
+        slot->id[i * 2] = HEX[f->raw[i] >> 4];
+        slot->id[i * 2 + 1] = HEX[f->raw[i] & 0xf];
+    }
+    slot->id[f->len * 2] = '\0';
     slot->model = nano_lookup_fx_model(slot->id);
 }
 
+/* Footswitch assignments IA, IB, IIA, IIB. */
+static const uint32_t FS_FIELDS[4] = { 14, 15, 38, 39 };
+
+/*
+ * One pass over the dump. The first occurrence of a field wins (as the field-by-field reads did); zero-valued
+ * varints are left out by the pedal (proto3), so every field starts at its absent meaning.
+ */
 bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out)
 {
     memset(out, 0, sizeof(*out));
     int msg_type;
     size_t plen = nano_split_trailer(body, len, &msg_type);
     if (msg_type != NANO_MSG_DUMP && msg_type != -1) return false;
-    const uint8_t *d = body;
-
-    const uint8_t *bypass;
-    size_t blen;
-    if (nano_first_bytes(d, plen, 31, &bypass, &blen) && blen >= NANO_FX_SLOT_COUNT) {
-        out->has_bypass = true;
-        for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) out->fx_on[i] = bypass[i] == 0;
-    }
+    out->gate_on = true;          /* field 54 is an inverted bypass flag: absent = on */
+    out->capture_volume = -1;
     bool has_capture = false, has_ir = false, has_amp = false;
-    const uint8_t *sub;
-    size_t slen;
-    if (nano_first_bytes(d, plen, 32, &sub, &slen)) {
-        has_capture = true;
-        string_field(sub, slen, 2, out->capture_name, sizeof(out->capture_name));
-    }
-    if (nano_first_bytes(d, plen, 33, &sub, &slen)) {
-        has_ir = true;
-        string_field(sub, slen, 2, out->ir_short_name, sizeof(out->ir_short_name));
-    }
-    for (uint32_t i = 0; i < 5; i++) {
-        int64_t v = nano_first_varint(d, plen, 3 + i, -1);
-        if (v >= 0) {
-            has_amp = true;
-            out->amp[i] = v > 255 ? 255 : (uint8_t)v;
+    uint64_t seen = 0;            /* fields below 64 already taken */
+    nano_proto_iter_t it;
+    nano_field_t f;
+    nano_proto_iter_init(&it, body, plen);
+    while (nano_proto_next(&it, &f)) {
+        if (f.field < 64) {
+            if (seen & (1ull << f.field)) continue;
+            seen |= 1ull << f.field;
+        }
+        bool varint = f.wire == NANO_WIRE_VARINT, bytes = f.wire == NANO_WIRE_BYTES, f32 = f.wire == NANO_WIRE_FIXED32;
+        switch (f.field) {
+        case 3: case 4: case 5: case 6: case 7:  /* gain, level, bass, mid, treble */
+            if (varint) {
+                has_amp = true;
+                out->amp[f.field - 3] = clamp_u8(f.value);
+            }
+            break;
+        case 11:  /* capture position in the bank; 0 / absent = bypassed */
+            out->capture_on = varint && f.value > 0;
+            break;
+        case 12:  /* IR slot: present = on */
+            out->cab_on = true;
+            if (varint && f.value > 0 && f.value < 256) out->cab_slot = (uint8_t)f.value;
+            break;
+        case 13:  /* absent = preset 1 */
+            if (varint && f.value < NANO_PRESET_COUNT) out->active_preset = (uint8_t)f.value;
+            break;
+        case 14: case 15: case 38: case 39:
+            for (int i = 0; i < 4; i++) {
+                if (FS_FIELDS[i] == f.field && varint && f.value < NANO_PRESET_COUNT) out->footswitch[i] = (uint8_t)f.value;
+            }
+            break;
+        case 24:
+            nano_field_text(&f, out->firmware, sizeof(out->firmware));
+            break;
+        case 31:  /* FX bypass flags, one byte per slot */
+            if (bytes && f.len >= NANO_FX_SLOT_COUNT) {
+                out->has_bypass = true;
+                for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) out->fx_on[i] = f.raw[i] == 0;
+            }
+            break;
+        case 32:
+            if (bytes) {
+                has_capture = true;
+                string_field(f.raw, f.len, 2, out->capture_name, sizeof(out->capture_name));
+            }
+            break;
+        case 33:
+            if (bytes) {
+                has_ir = true;
+                string_field(f.raw, f.len, 2, out->ir_short_name, sizeof(out->ir_short_name));
+            }
+            break;
+        case 44:
+            if (varint) out->capture_volume = clamp_u8(f.value);
+            break;
+        case 46:
+            if (f32) {
+                float ref = nano_field_f32(&f);
+                if (ref >= 400.0f && ref <= 480.0f) out->tuner_reference_hz = ref;
+            }
+            break;
+        case 48: case 49: case 50: case 51: case 52:
+            model_id_hex(&f, &out->fx[f.field - 48]);
+            break;
+        case 54:
+            if (varint) out->gate_on = f.value == 0;
+            break;
+        case 56:
+            if (f32) {
+                float bpm = nano_field_f32(&f);
+                if (bpm >= 20.0f && bpm <= 400.0f) out->tempo_bpm = bpm;
+            }
+            break;
+        default:
+            break;
         }
     }
-    if (!out->has_bypass && !has_capture && !has_ir && !has_amp) return false;
-
-    /* Field 54 is an inverted bypass flag; absent = gate on. */
-    out->gate_on = nano_first_varint(d, plen, 54, 0) == 0;
-    out->cab_on = nano_has_field(d, plen, 12);
-    int64_t cab = nano_first_varint(d, plen, 12, 0);
-    out->cab_slot = cab > 0 && cab < 256 ? (uint8_t)cab : 0;
-    out->capture_on = nano_first_varint(d, plen, 11, 0) > 0;
-    int64_t vol = nano_first_varint(d, plen, 44, -1);
-    out->capture_volume = vol < 0 ? -1 : vol > 255 ? 255 : (int16_t)vol;
-    for (uint32_t i = 0; i < NANO_FX_SLOT_COUNT; i++) model_id_hex(d, plen, 48 + i, &out->fx[i]);
-
-    /* Zero-valued varints are omitted (proto3 defaults): absent field 13 = preset 1. */
-    int64_t preset = nano_first_varint(d, plen, 13, 0);
-    out->active_preset = preset < NANO_PRESET_COUNT ? (uint8_t)preset : 0;
-    static const uint32_t FS_FIELDS[4] = { 14, 15, 38, 39 };
-    for (int i = 0; i < 4; i++) {
-        int64_t v = nano_first_varint(d, plen, FS_FIELDS[i], 0);
-        out->footswitch[i] = v < NANO_PRESET_COUNT ? (uint8_t)v : 0;
-    }
-    nano_first_string(d, plen, 24, out->firmware, sizeof(out->firmware));
-    float bpm;
-    if (nano_first_fixed32_float(d, plen, 56, &bpm) && bpm >= 20.0f && bpm <= 400.0f) out->tempo_bpm = bpm;
-    float ref;
-    if (nano_first_fixed32_float(d, plen, 46, &ref) && ref >= 400.0f && ref <= 480.0f) out->tuner_reference_hz = ref;
-    return true;
+    return out->has_bypass || has_capture || has_ir || has_amp;
 }
 
 /* ---- IR settings ------------------------------------------------------- */
@@ -174,11 +214,11 @@ bool nano_decode_cab_settings(const uint8_t *d, size_t len, nano_cab_settings_t 
         if ((f.field == 5 || f.field == 6) && !ir) {
             ir = true;
             out->factory = f.field == 5;
-            out->kind = (uint32_t)nano_first_varint(f.raw, f.len, 1, 0);
-            nano_first_string(f.raw, f.len, 2, out->ir_name, sizeof(out->ir_name));
-            int64_t pos = nano_first_varint(f.raw, f.len, 3, 0);
-            out->position = pos >= 0 && pos < 256 ? (uint8_t)pos : 0;
-            nano_first_string(f.raw, f.len, 4, out->mic, sizeof(out->mic));
+            out->kind = nano_get_uint(f.raw, f.len, 1, UINT32_MAX, 0);
+            nano_get_text(f.raw, f.len, 2, out->ir_name, sizeof(out->ir_name));
+            int pos = nano_get_index(f.raw, f.len, 3, NANO_CAB_POSITIONS, 0);
+            out->position = pos < 0 ? 0 : (uint8_t)pos;
+            nano_get_text(f.raw, f.len, 4, out->mic, sizeof(out->mic));
         } else if (f.field == 7 && out->mic_count < NANO_CAB_MICS_MAX && f.len && f.len < NANO_CAB_MIC_CAP) {
             memcpy(out->mics[out->mic_count], f.raw, f.len);
             out->mics[out->mic_count][f.len] = '\0';
@@ -188,7 +228,7 @@ bool nano_decode_cab_settings(const uint8_t *d, size_t len, nano_cab_settings_t 
             nano_field_t g;
             nano_proto_iter_init(&in, f.raw, f.len);
             while (nano_proto_next(&in, &g)) {
-                if (g.wire == NANO_WIRE_FIXED32 && g.field >= 1 && g.field <= 3) memcpy(&out->values[g.field - 1], g.raw, 4);
+                if (g.wire == NANO_WIRE_FIXED32 && g.field >= 1 && g.field <= 3) out->values[g.field - 1] = nano_field_f32(&g);
                 else if (g.wire == NANO_WIRE_VARINT && g.field == 4) out->phase_inverted = g.value != 0;
             }
         }
@@ -212,13 +252,13 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
     switch (msg_type) {
     case NANO_MSG_PRESET_CHANGED: {
         /* `10 C0 08 01 20 <preset> 28 <IA> 30 <IB> 38 <IIA> 40 <IIB> 1D 00 00 00`; zero fields absent. */
-        int64_t preset = nano_first_varint(body, plen, 4, 0);
-        if (preset >= NANO_PRESET_COUNT) return;
+        int preset = nano_get_index(body, plen, 4, NANO_PRESET_COUNT, 0);
+        if (preset < 0) return;
         out->kind = NANO_EV_PRESET_CHANGED;
         out->preset = (uint8_t)preset;
         for (uint32_t i = 0; i < 4; i++) {
-            int64_t v = nano_first_varint(body, plen, 5 + i, 0);
-            out->footswitch[i] = v < NANO_PRESET_COUNT ? (uint8_t)v : 0;
+            int v = nano_get_index(body, plen, 5 + i, NANO_PRESET_COUNT, 0);
+            out->footswitch[i] = v < 0 ? 0 : (uint8_t)v;
         }
         return;
     }
@@ -231,10 +271,9 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
     case NANO_MSG_ENCODER: {
         /* `18 <sel> 20 <val> 1C`: the same shape as the slot writes, sent when the encoder scrolls captures / IRs. */
         out->kind = NANO_EV_CONTROL;
-        int64_t sel = nano_first_varint(body, plen, 3, 0);
-        int64_t val = nano_first_varint(body, plen, 4, -1);
-        out->selector = sel >= 0 && sel < 256 ? (uint8_t)sel : 0;
-        out->value = val >= 0 && val < 1000 ? (int32_t)val : -1;
+        int sel = nano_get_index(body, plen, 3, 256, 0);
+        out->selector = sel < 0 ? 0 : (uint8_t)sel;
+        out->value = nano_get_index(body, plen, 4, 1000, -1);
         return;
     }
     case NANO_MSG_KNOB:
@@ -243,9 +282,8 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
         out->value = -1;
         return;
     case NANO_MSG_EXPRESSION: {
-        int64_t pos = nano_first_varint(body, plen, 4, 0); /* absent at heel */
         out->kind = NANO_EV_EXPRESSION;
-        out->position = pos > 254 ? 254 : (uint8_t)pos;
+        out->position = (uint8_t)nano_get_uint(body, plen, 4, 254, 0); /* absent at heel */
         return;
     }
     case NANO_MSG_EXPRESSION_VALUES: {
@@ -253,10 +291,9 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
          * flags at 17..21; `06 C0 08 01 AA 00 00 00` after a preset load with nothing assigned. */
         out->kind = NANO_EV_EXP_VALUES;
         for (uint32_t i = 0; i < NANO_FX_SLOT_COUNT; i++) {
-            int64_t v = nano_first_varint(body, plen, 9 + i, -1);
-            out->exp_values.fx_value[i] = v < 0 ? -1 : (int16_t)(v > 255 ? 255 : v);
-            int64_t b = nano_first_varint(body, plen, 17 + i, -1);
-            out->exp_values.fx_bypass[i] = b < 0 ? -1 : (b != 0);
+            uint64_t v;
+            out->exp_values.fx_value[i] = nano_get_varint(body, plen, 9 + i, &v) ? clamp_u8(v) : -1;
+            out->exp_values.fx_bypass[i] = nano_get_varint(body, plen, 17 + i, &v) ? (v != 0) : -1;
         }
         return;
     }
@@ -269,14 +306,13 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
         const uint8_t *sub;
         size_t sub_len;
         for (uint32_t i = 0; i < NANO_FX_SLOT_COUNT; i++) {
-            if (nano_first_bytes(body, plen, 7 + i, &sub, &sub_len)) {
-                int64_t lo = nano_first_varint(sub, sub_len, 2, 0), hi = nano_first_varint(sub, sub_len, 3, 255);
+            if (nano_get_bytes(body, plen, 7 + i, &sub, &sub_len)) {
                 a->fx_range[i].assigned = true;
-                a->fx_range[i].min = lo < 0 ? 0 : lo > 255 ? 255 : (uint8_t)lo;
-                a->fx_range[i].max = hi < 0 ? 0 : hi > 255 ? 255 : (uint8_t)hi;
+                a->fx_range[i].min = (uint8_t)nano_get_uint(sub, sub_len, 2, 255, 0);
+                a->fx_range[i].max = (uint8_t)nano_get_uint(sub, sub_len, 3, 255, 255);
                 if (a->fx_range[i].max < a->fx_range[i].min) a->fx_range[i].max = a->fx_range[i].min;
             }
-            if (nano_first_bytes(body, plen, 15 + i, &sub, &sub_len)) {
+            if (nano_get_bytes(body, plen, 15 + i, &sub, &sub_len)) {
                 nano_field_t f;
                 nano_proto_iter_t it;
                 nano_proto_iter_init(&it, sub, sub_len);
@@ -292,31 +328,34 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
     }
     case NANO_MSG_TUNER_PITCH: {
         float cents;
-        if (!nano_first_string(body, plen, 4, out->note, sizeof(out->note)) || !nano_first_fixed32_float(body, plen, 5, &cents)) return;
+        if (!nano_get_text(body, plen, 4, out->note, sizeof(out->note)) || !nano_get_f32(body, plen, 5, &cents)) return;
         out->kind = NANO_EV_TUNER_PITCH;
         out->cents = cents;
-        out->in_tune = nano_first_varint(body, plen, 7, 0) == 1;
+        out->in_tune = nano_get_uint(body, plen, 7, 2, 0) == 1;
         return;
     }
     case NANO_MSG_TUNER: {
         out->kind = NANO_EV_TUNER_ACK;
-        out->tuner_on = nano_first_varint(body, plen, 4, 0) == 1;
-        out->tuner_muted = nano_first_varint(body, plen, 7, 0) == 1;
+        out->tuner_on = nano_get_uint(body, plen, 4, 2, 0) == 1;
+        out->tuner_muted = nano_get_uint(body, plen, 7, 2, 0) == 1;
         float ref;
-        out->reference_hz = nano_first_fixed32_float(body, plen, 5, &ref) ? ref : 0.0f;
+        out->reference_hz = nano_get_f32(body, plen, 5, &ref) ? ref : 0.0f;
         return;
     }
     case NANO_MSG_SETTINGS:
         /* 60-byte reply to NANO_REQ_SETTINGS; field 16 = 1 while outputs 1/2 are muted, absent while on. */
         out->kind = NANO_EV_SETTINGS;
-        out->outputs_muted = nano_first_varint(body, plen, 16, 0) == 1;
+        out->outputs_muted = nano_get_uint(body, plen, 16, 2, 0) == 1;
         return;
-    case NANO_MSG_RENAME_REPLY:
-        /* `08 06 18 <preset> 20 <1 = ok>` (2026-10-08) */
+    case NANO_MSG_RENAME_REPLY: {
+        /* `08 06 18 <preset> 20 <1 = ok>` (2026-10-08); absent preset = preset 1 (proto3 leaves zeros out). */
+        int preset = nano_get_index(body, plen, 3, NANO_PRESET_COUNT, 0);
+        if (preset < 0) return;
         out->kind = NANO_EV_RENAME_REPLY;
-        out->preset = (uint8_t)nano_first_varint(body, plen, 3, 0);
-        out->ok = nano_first_varint(body, plen, 4, 0) == 1;
+        out->preset = (uint8_t)preset;
+        out->ok = nano_get_uint(body, plen, 4, 2, 0) == 1;
         return;
+    }
     case NANO_MSG_OUTPUTS_MUTE_ACK:
         out->kind = NANO_EV_OUTPUTS_MUTE_ACK;
         return;
@@ -324,9 +363,9 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
         /* `0D C0 08 01 18 01 2D <f32 BPM> 91 00 00 00` per tap; `0B C0 08 01 2D <f32> 91 00 00 00` on exit
          * (captured 2026-09-26 on the user's pedal: hold the left switch, tap, hold again). */
         float bpm;
-        if (!nano_first_fixed32_float(body, plen, 5, &bpm) || bpm < 20.0f || bpm > 400.0f) return;
+        if (!nano_get_f32(body, plen, 5, &bpm) || bpm < 20.0f || bpm > 400.0f) return;
         out->kind = NANO_EV_TAP_TEMPO;
-        out->tap_active = nano_first_varint(body, plen, 3, 0) == 1;
+        out->tap_active = nano_get_uint(body, plen, 3, 2, 0) == 1;
         out->tempo_bpm = bpm;
         return;
     }
