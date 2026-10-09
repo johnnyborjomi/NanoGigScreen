@@ -22,6 +22,7 @@ extern "C" {
 #define C_MUTED 0x8D97A5
 #define C_DIM 0x4D5661
 #define C_ON 0x2DD4A0
+#define C_SAVED 0x7FDDD0  /* a light teal: the IR the preset was saved with */
 #define C_OFF 0x2A313B
 #define C_OFF_TEXT 0x6B7583
 #define C_WARN 0xFFB454
@@ -36,6 +37,7 @@ extern "C" {
  * from JulietaUla/Montserrat (OFL): tools/fonts.md has the command. */
 LV_FONT_DECLARE(montserrat_medium_10)
 LV_FONT_DECLARE(montserrat_medium_12)
+LV_FONT_DECLARE(montserrat_medium_20_phase) /* only "Ø" (the Phase button) */
 /* Montserrat Bold 10 for the category tag at the top of each FX tile. */
 LV_FONT_DECLARE(montserrat_bold_10)
 

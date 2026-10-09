@@ -155,8 +155,13 @@ static void build_preset_row(lv_obj_t *root)
 {
     /* prev | label + name | next. */
     const int32_t nav_y = ROW_Y + (ROW_H - NAV_H) / 2;
-    w.prev = ui_button(root, EDGE_X, nav_y, NAV_W, NAV_H, LV_SYMBOL_LEFT, &lv_font_montserrat_20, C_PANEL, C_MUTED, on_prev, NULL);
-    w.next = ui_button(root, RIGHT_X - NAV_W, nav_y, NAV_W, NAV_H, LV_SYMBOL_RIGHT, &lv_font_montserrat_20, C_PANEL, C_MUTED, on_next, NULL);
+    /* A tap steps, a hold opens the presets list (short clicks only: no step when the hold is let go). */
+    w.prev = ui_button(root, EDGE_X, nav_y, NAV_W, NAV_H, LV_SYMBOL_LEFT, &lv_font_montserrat_20, C_PANEL, C_MUTED, NULL, NULL);
+    w.next = ui_button(root, RIGHT_X - NAV_W, nav_y, NAV_W, NAV_H, LV_SYMBOL_RIGHT, &lv_font_montserrat_20, C_PANEL, C_MUTED, NULL, NULL);
+    lv_obj_add_event_cb(w.prev, on_prev, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_add_event_cb(w.next, on_next, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_add_event_cb(w.prev, on_open_presets, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(w.next, on_open_presets, LV_EVENT_LONG_PRESSED, NULL);
     w.preset_label = ui_label(root, &lv_font_montserrat_24, C_TEXT);
     lv_obj_set_pos(w.preset_label, NAV_W + 6, ROW_Y + 4);
     w.preset_name = ui_label(root, &lv_font_montserrat_32, C_TEXT);

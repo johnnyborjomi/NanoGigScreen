@@ -94,6 +94,23 @@ typedef struct {
 /* Payload without the trailer. False when it describes no IR. */
 bool nano_decode_cab_settings(const uint8_t *payload, size_t len, nano_cab_settings_t *out);
 
+/*
+ * IR library (type 0x4D, reply to nano_build_library_request; DrD85's nano_library_parse): every IR on the pedal, not
+ * just the five on its IR list. Field 4 = a factory IR's name, 6 = a user IR's name, repeated in the pedal's order
+ * (an IR's index is its position in its list); 3 / 5 = captures, skipped here.
+ */
+enum { NANO_IR_FACTORY = 0, NANO_IR_USER = 1 };
+typedef struct {
+    uint16_t count[2];                 /* NANO_IR_FACTORY, NANO_IR_USER */
+    uint16_t size;                     /* bytes of `names` */
+    char names[];                      /* the factory names, then the user names, each '\0'-ended */
+} nano_ir_library_t;
+/* The bytes the library needs (header + names), 0 when the payload names no IR. Fills `out` only when that fits
+ * `cap` (out NULL: just measure). */
+size_t nano_decode_ir_library(const uint8_t *payload, size_t len, nano_ir_library_t *out, size_t cap);
+/* Name of IR `index` in `list`, NULL when out of range. */
+const char *nano_ir_library_name(const nano_ir_library_t *lib, int list, int index);
+
 typedef enum {
     NANO_EV_UNKNOWN = 0,
     NANO_EV_PRESET_CHANGED,    /* preset + footswitch assignments */

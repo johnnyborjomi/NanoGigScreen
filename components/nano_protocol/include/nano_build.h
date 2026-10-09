@@ -82,6 +82,8 @@ size_t nano_build_preset_rename(uint8_t *out, size_t cap, uint8_t preset_index, 
  * IR (cab) of the current preset: Cortex Cloud's IR loader. Read and level / filter writes from
  * DrD85/nano-cortex-controller (MIT); phase, microphone and position writes from an Android HCI snoop of Cortex
  * Cloud (2026-10-09). All writes are live edits: audible, the preset is not saved.
+ *   select    `08 C0 18 03 20 <slot> 1C 00 00 00`: slot 1..5 on the pedal's IR list, 0 = IR off (DrD85's
+ *             nano_cab_select; the pedal's encoder reports the same 0x1C). The next state dump shows it.
  *   read      `08 C0 18 00 20 <slot - 1> 5F 00 00 00` (slot = state field 12) -> type 0x60, see
  *             nano_decode_cab_settings.
  *   level etc `09 C0 <field 5 / 6 / 7 = level / high pass / low pass, f32 0..1> 5E 00 00 00` (nano_scales.h)
@@ -89,6 +91,8 @@ size_t nano_build_preset_rename(uint8_t *out, size_t cap, uint8_t preset_index, 
  *   mic       `<len> C0 1A <n> { 08 <kind> 12 <IR name> 18 <position 0..5> 22 <microphone> } 5E 00 00 00`:
  *             the factory IR is picked by name, position and microphone (both from the read).
  */
+/* Returns 10. */
+size_t nano_build_cab_select(uint8_t *out, size_t cap, uint8_t slot);
 /* Returns 10, or 0 for slot 0 (state field 12: 1..5, 6 for most presets). */
 size_t nano_build_cab_settings_request(uint8_t *out, size_t cap, uint8_t slot);
 /* Returns 11 (the value is clamped to 0..1), or 0 for an unknown parameter. */
@@ -97,6 +101,23 @@ size_t nano_build_cab_setting(uint8_t *out, size_t cap, nano_cab_param_t param, 
 size_t nano_build_cab_phase(uint8_t *out, size_t cap, bool inverted);
 /* `kind` and `ir_name` as the read reported them (nano_cab_settings_t). Returns 0 when too long. */
 size_t nano_build_cab_mic(uint8_t *out, size_t cap, uint32_t kind, const char *ir_name, uint8_t position, const char *mic);
+/*
+ * Load an IR from the pedal's library (nano_decode_ir_library) into the current preset, a live edit like picking one
+ * in Cortex Cloud's IR loader. The read's `kind` is the IR's index in its list (2026-10-09: user IR "Tay816 M251
+ * Pz1" = kind 7 = 8th user IR).
+ *   factory  `<len> C0 1A <n> { 08 <index> 12 <name> } 5E 00 00 00`: the microphone frame without position and
+ *            microphone (the pedal's defaults)
+ *   user     `<len> C0 22 <n> { 08 <index> 12 <name> } 5E 00 00 00`: guessed from the read (field 5 factory / 6 user)
+ * `list` = NANO_IR_FACTORY / NANO_IR_USER. Returns 0 for an empty name or one that does not fit.
+ */
+size_t nano_build_cab_load(uint8_t *out, size_t cap, int list, uint32_t index, const char *name);
+
+/*
+ * Library request (Cortex Cloud's, byte-exact from the 2026-10-09 snoop; DrD85's RetrieveLibraryContent):
+ * `0C C0 18 01 20 01 28 01 30 01 4C 00 00 00` asks for factory captures, factory IRs, user captures and user IRs
+ * (fields 3..6, as the reply's), ~11 KB. `irs_only` leaves fields 3 and 5 out: the IR names alone (untested).
+ */
+size_t nano_build_library_request(uint8_t *out, size_t cap, bool irs_only);
 
 /*
  * Read a preset's expression pedal assignments (Cortex Cloud's request on its Expression Pedal

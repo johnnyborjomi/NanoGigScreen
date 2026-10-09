@@ -31,6 +31,29 @@ void ui_overlay_set_back(const ui_overlay_t *o, bool shown)
     lv_obj_set_x(o->title, shown ? 40 : 12);
 }
 
+void ui_header_tabs(lv_obj_t *root, const char *const names[2], lv_event_cb_t cb, lv_obj_t *out[2])
+{
+    const int32_t x0 = 48, tab_w = (SCREEN_W - 2 * x0 - 6) / 2;
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *t = ui_button(root, x0 + i * (tab_w + 6), 1, tab_w, TOP_H + 2, names[i], &lv_font_montserrat_14, C_PANEL_2, C_TEXT, cb, (void *)(intptr_t)i);
+        lv_obj_set_style_radius(t, 6, 0);
+        lv_obj_set_style_border_side(t, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_color(t, lv_color_hex(C_ACCENT), 0);
+        lv_obj_set_ext_click_area(t, 4);
+        out[i] = t;
+    }
+}
+
+void ui_header_tabs_select(lv_obj_t *const tabs[2], int selected)
+{
+    for (int i = 0; i < 2; i++) {
+        bool on = i == selected;
+        lv_obj_set_style_bg_opa(tabs[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tabs[i], on ? 2 : 0, 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(tabs[i], 0), lv_color_hex(on ? C_TEXT : C_MUTED), 0);
+    }
+}
+
 /* ---- pager ------------------------------------------------------------------------ */
 
 void ui_pager_show(ui_pager_t *p, int idx)

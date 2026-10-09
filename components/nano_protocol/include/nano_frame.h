@@ -60,6 +60,8 @@ enum {
     NANO_MSG_SETTINGS = 0x42,
     NANO_MSG_SETTINGS_UPDATE = 0x43, /* nano_build_outputs_mute */
     NANO_MSG_OUTPUTS_MUTE_ACK = 0x44, /* any settings write answers this (UpdateSettingsResponse) */
+    NANO_MSG_LIBRARY_REQUEST = 0x4c, /* nano_build_library_request */
+    NANO_MSG_LIBRARY = 0x4d,         /* reply: every capture and IR on the pedal (nano_decode_ir_library) */
     NANO_MSG_CAB_SETTING = 0x5e,     /* nano_build_cab_setting */
     NANO_MSG_CAB_SETTINGS_REQUEST = 0x5f, /* nano_build_cab_settings_request */
     NANO_MSG_CAB_SETTINGS = 0x60,    /* reply to nano_build_cab_settings_request (nano_decode_cab_settings) */

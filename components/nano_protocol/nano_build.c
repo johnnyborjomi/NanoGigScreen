@@ -1,4 +1,5 @@
 #include "nano_build.h"
+#include "nano_decode.h"
 
 #include <string.h>
 
@@ -120,6 +121,39 @@ size_t nano_build_tuner_on(uint8_t *out, size_t cap, float reference_hz, bool mu
     nano_pb_varint(&w, 6, 1);
     nano_pb_varint(&w, 7, mute ? 1 : 0);
     return nano_frame_end(&w, NANO_MSG_TUNER);
+}
+
+size_t nano_build_cab_select(uint8_t *out, size_t cap, uint8_t slot)
+{
+    if (slot > 0x7F) return 0;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    nano_pb_varint(&w, 3, 3); /* selector 3: the IR */
+    nano_pb_varint(&w, 4, slot);
+    return nano_frame_end(&w, NANO_MSG_ENCODER);
+}
+
+size_t nano_build_cab_load(uint8_t *out, size_t cap, int list, uint32_t index, const char *name)
+{
+    if (!name || !name[0] || (list != NANO_IR_FACTORY && list != NANO_IR_USER)) return 0;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    size_t ir = nano_pb_begin(&w, list == NANO_IR_FACTORY ? 3 : 4);
+    nano_pb_varint(&w, 1, index);
+    nano_pb_text(&w, 2, name);
+    nano_pb_end(&w, ir);
+    return nano_frame_end(&w, NANO_MSG_CAB_SETTING);
+}
+
+size_t nano_build_library_request(uint8_t *out, size_t cap, bool irs_only)
+{
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    if (!irs_only) nano_pb_varint(&w, 3, 1); /* factory captures */
+    nano_pb_varint(&w, 4, 1);                /* factory IRs */
+    if (!irs_only) nano_pb_varint(&w, 5, 1); /* user captures */
+    nano_pb_varint(&w, 6, 1);                /* user IRs */
+    return nano_frame_end(&w, NANO_MSG_LIBRARY_REQUEST);
 }
 
 size_t nano_build_cab_settings_request(uint8_t *out, size_t cap, uint8_t slot)
