@@ -55,17 +55,35 @@ typedef struct {
 
 static meta_blob_t s_blob; /* ~7 KB, the one copy: g_app.meta points into it */
 
+bool settings_load_blob(const char *key, void *blob, size_t len)
+{
+    nvs_handle_t h;
+    bool ok = false;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        size_t got = len;
+        ok = nvs_get_blob(h, key, blob, &got) == ESP_OK && got == len;
+        nvs_close(h);
+    }
+    if (!ok) memset(blob, 0, len);
+    return ok;
+}
+
+bool settings_save_blob(const char *key, const void *blob, size_t len)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(h, key, blob, len);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    return err == ESP_OK;
+}
+
 static void load_meta(void)
 {
     g_app.meta = &s_blob.meta;
-    g_app.meta_valid = false;
-    nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        size_t len = sizeof(s_blob);
-        esp_err_t err = nvs_get_blob(h, KEY_META, &s_blob, &len);
-        nvs_close(h);
-        g_app.meta_valid = err == ESP_OK && len == sizeof(s_blob) && s_blob.magic == META_MAGIC;
-    }
+    g_app.meta_valid = settings_load_blob(KEY_META, &s_blob, sizeof(s_blob)) && s_blob.magic == META_MAGIC;
     if (!g_app.meta_valid) memset(&s_blob, 0, sizeof(s_blob));
     ESP_LOGI(TAG, "metadata cache %s", g_app.meta_valid ? "loaded" : "empty");
 }
@@ -73,14 +91,7 @@ static void load_meta(void)
 void settings_save_meta(void)
 {
     s_blob.magic = META_MAGIC;
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(h, KEY_META, &s_blob, sizeof(s_blob));
-        if (err == ESP_OK) err = nvs_commit(h);
-        nvs_close(h);
-    }
-    ESP_LOGI(TAG, "metadata cache %s", err == ESP_OK ? "saved" : "save failed");
+    ESP_LOGI(TAG, "metadata cache %s", settings_save_blob(KEY_META, &s_blob, sizeof(s_blob)) ? "saved" : "save failed");
 }
 
 void settings_load(void)

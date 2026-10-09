@@ -15,7 +15,8 @@ and shows, with no phone on the floor:
 - capture and IR pages: long-press the capture or IR line; tabs in the header switch between them. Capture:
   volume. IR: on / off, phase and ◀ ▶ through the pedal's IR list (the preset's saved IR in teal), Level,
   High pass, Low pass, plus microphone and position for factory IRs, on Cortex Cloud's scales. Hold the IR
-  name for every IR on the pedal (User / Factory tabs, six a page): tap one to load it into the preset. Live edits
+  name for every IR on the pedal (User / Factory tabs, five a page): tap one to load it into the preset; folders of
+  our own (kept on the screen: + Folder, hold an IR to move it, rename / delete in a folder). Live edits
   like Cortex Cloud's (EXIT on the pedal reverts them, the screen follows)
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
 - menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),

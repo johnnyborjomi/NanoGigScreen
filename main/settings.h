@@ -2,6 +2,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Load everything; the name cache goes to g_app.meta. Call once, after nvs_flash_init. */
@@ -21,6 +22,11 @@ void settings_set_brightness(uint8_t v);     /* applied now, saved once the slid
 void settings_flush(void);                   /* write what is still pending (before a restart) */
 void settings_tick(int64_t now);
 void settings_ui_push(uint32_t parts);
+
+/* A fixed-size blob under `key` (put a magic in front to tell layouts apart). Load: false = missing or another
+ * size (then zeroed). */
+bool settings_load_blob(const char *key, void *blob, size_t len);
+bool settings_save_blob(const char *key, const void *blob, size_t len);
 
 /* Write g_app.meta to flash (after a metadata dump that changed it, or a rename). */
 void settings_save_meta(void);

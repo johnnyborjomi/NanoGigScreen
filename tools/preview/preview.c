@@ -82,6 +82,7 @@ static void noop_i(int v) { (void)v; }
 static void noop_rename(uint8_t i, const char *n) { (void)i; (void)n; }
 static void noop_cab(uint8_t p, float n) { (void)p; (void)n; }
 static void noop_mic(uint8_t p, const char *m) { (void)p; (void)m; }
+static void noop_folder(uint8_t op, uint8_t list, uint8_t folder, const char *text) { (void)op, (void)list, (void)folder, (void)text; }
 static void noop_pick(uint8_t list, uint16_t index, const char *name) { (void)list, (void)index, (void)name; }
 
 int main(int argc, char **argv)
@@ -96,7 +97,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_on = noop_b, .on_cab_step = noop_i, .on_ir_library = noop_b, .on_ir_pick = noop_pick, .on_cab_mic = noop_mic };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_on = noop_b, .on_cab_step = noop_i, .on_ir_library = noop_b, .on_ir_pick = noop_pick, .on_ir_folder_edit = noop_folder, .on_cab_mic = noop_mic };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -389,6 +390,41 @@ int main(int argc, char **argv)
         if (factory_tab) lv_obj_send_event(factory_tab, LV_EVENT_CLICKED, NULL);
         render(50);
         save(dir, "9x-ir-list-factory");
+        /* Folders: two in the user list with three IRs; the top, inside one, moving an IR, delete armed. */
+        {
+            static nano_ir_folders_t folders;
+            memset(&folders, 0, sizeof(folders));
+            nano_ir_folder_apply(&folders, NANO_IR_FOLDER_CREATE, NANO_IR_USER, 0, "Tay816");
+            nano_ir_folder_apply(&folders, NANO_IR_FOLDER_CREATE, NANO_IR_USER, 0, "York Audio");
+            nano_ir_folder_apply(&folders, NANO_IR_FOLDER_FILE, NANO_IR_USER, 1, "Tay816 M251 EXP1");
+            nano_ir_folder_apply(&folders, NANO_IR_FOLDER_FILE, NANO_IR_USER, 1, "Tay816 M251 SB3 (Blend)");
+            nano_ir_folder_apply(&folders, NANO_IR_FOLDER_FILE, NANO_IR_USER, 2, "YA MES 412 TRAD Mix 10");
+            nano_ui_set_ir_folders(&folders);
+        }
+        lv_obj_t *user_tab = nano_ui_find("User");
+        if (user_tab) lv_obj_send_event(user_tab, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *page_up = nano_ui_find(LV_SYMBOL_UP);
+        if (page_up) lv_obj_send_event(page_up, LV_EVENT_CLICKED, NULL); /* it opened on the current IR's page 2 */
+        render(50);
+        save(dir, "9y-ir-folders-top");
+        lv_obj_t *dread = nano_ui_find("Dread-35 SR25 Pz1");
+        if (dread) lv_obj_send_event(dread, LV_EVENT_LONG_PRESSED, NULL);
+        render(50);
+        save(dir, "9y2-ir-folders-move");
+        lv_obj_t *cancel = nano_ui_find(LV_SYMBOL_CLOSE " Cancel");
+        if (cancel) lv_obj_send_event(cancel, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *folder_row = nano_ui_find(LV_SYMBOL_DIRECTORY "  York Audio  (1)");
+        if (folder_row) lv_obj_send_event(folder_row, LV_EVENT_SHORT_CLICKED, NULL);
+        render(50);
+        save(dir, "9y3-ir-folder-open");
+        lv_obj_t *trash = nano_ui_find(LV_SYMBOL_TRASH);
+        if (trash) lv_obj_send_event(trash, LV_EVENT_CLICKED, NULL);
+        render(50);
+        save(dir, "9y4-ir-folder-delete-armed");
+        lv_obj_t *rename = nano_ui_find(LV_SYMBOL_EDIT);
+        if (rename) lv_obj_send_event(rename, LV_EVENT_CLICKED, NULL);
+        render(50);
+        save(dir, "9y5-ir-folder-rename");
         nano_ui_show(NANO_VIEW_MAIN);
         /* Rename page (long press on the name): 20 characters, then the pedal's refusal. */
         nano_ui_open_rename(0);

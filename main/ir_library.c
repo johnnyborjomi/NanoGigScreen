@@ -5,6 +5,7 @@
 
 #include "app.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "nano_ui.h"
 
 static const char *TAG = "irlib";
@@ -28,7 +29,9 @@ static void request(bool irs_only)
 void ir_library_set_open(bool open)
 {
     s.open = open;
+    ESP_LOGI(TAG, "IR list %s, free heap %u B (lowest %u B)", open ? "open" : "closed", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
     if (open) {
+        ui_mark(UI_IR_FOLDERS);
         request(true);
         return;
     }

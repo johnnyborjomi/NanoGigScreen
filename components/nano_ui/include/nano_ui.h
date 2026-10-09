@@ -19,6 +19,7 @@
 
 #include "lvgl.h"
 #include "nano_decode.h"
+#include "nano_ir_folders.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,6 +81,9 @@ typedef struct {
     void (*on_ir_library)(bool open);
     /* IR list: load IR `index` of `list` (NANO_IR_FACTORY / NANO_IR_USER) into the preset. */
     void (*on_ir_pick)(uint8_t list, uint16_t index, const char *name);
+    /* IR list: create / rename / delete a folder, or file an IR (nano_ir_folder_op_t); the app answers with
+     * nano_ui_set_ir_folders. */
+    void (*on_ir_folder_edit)(uint8_t op, uint8_t list, uint8_t folder, const char *text);
     /* IR tab, factory IRs: microphone (one of the read's list) and position 0..5 picked. NULL = read-only. */
     void (*on_cab_mic)(uint8_t position, const char *mic);
     /* A tile was tapped: slot 0..4 = pre1..post3, `on` = its state as shown. */
@@ -150,6 +154,8 @@ void nano_ui_set_ir_settings(const nano_cab_settings_t *settings, int preset, bo
 /* The IR list's IRs (nano_decode_ir_library into a malloc'd buffer): the screen owns `lib` from here and frees it
  * when the list closes or another one arrives. */
 void nano_ui_set_ir_library(nano_ir_library_t *lib);
+/* The IR folders (copied; the list page shows them while it is open). */
+void nano_ui_set_ir_folders(const nano_ir_folders_t *folders);
 /* IR tab pager (for previews / tests). */
 void nano_ui_ir_page(int index);
 /* Tempo line: `tapping` = the pedal is in tap tempo mode (highlighted). 0 BPM clears it. */
