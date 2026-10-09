@@ -79,7 +79,8 @@ static ui_value_ctrl_t *s_cap_vol;  /* the volume control while the page is open
 static char s_ir_name[NANO_NAME_CAP];
 static bool s_ir_on;
 static nano_cab_settings_t s_ir_set; /* the pedal's last answer (values, microphone, position) */
-static bool s_ir_known;            /* s_ir holds the pedal's answer for s_ir_owner */
+static bool s_ir_known;            /* s_ir_set holds the pedal's answer for s_ir_owner */
+static bool s_ir_unreadable;       /* the pedal answered for s_ir_owner, but with no IR settings */
 static int s_ir_owner = -1;        /* preset the settings belong to */
 static lv_obj_t *s_ir_dot_l, *s_ir_name_l, *s_ir_hint, *s_ir_phase_btn, *s_ir_page;
 #define IR_MIC_BUTTONS 6 /* Cortex Cloud offers five */
@@ -1169,7 +1170,7 @@ static void ir_refresh_as(bool fresh)
     lv_obj_set_style_bg_color(s_ir_dot_l, lv_color_hex(s_ir_on ? C_ON : C_DIM), 0);
     lv_label_set_text(s_ir_name_l, s_ir_name[0] ? s_ir_name : "No IR");
     lv_obj_set_style_text_color(s_ir_name_l, lv_color_hex(s_ir_on ? C_TEXT : C_OFF_TEXT), 0);
-    lv_label_set_text(s_ir_hint, !s_ir_on ? "IR is off" : !s_ir_known ? "Reading..." : "");
+    lv_label_set_text(s_ir_hint, !s_ir_on ? "IR is off" : !s_ir_known ? (s_ir_unreadable ? "No settings for this IR" : "Reading...") : "");
     for (int i = 0; i < NANO_CAB_PARAMS; i++) {
         int raw = s_ir_on && s_ir_known ? ir_raw_of((nano_cab_param_t)i, s_ir_set.values[i]) : -1;
         if (fresh) ui_value_ctrl_set(s_ir_ctrl[i], raw, s_ir_owner);
@@ -1599,6 +1600,8 @@ static void show_view(nano_view_t view, bool notify)
     s_view = view;
     lv_obj_set_hidden(s_menu, view != NANO_VIEW_MENU);
     lv_obj_set_hidden(s_settings, view != NANO_VIEW_SETTINGS);
+    /* The list returns to a bank only straight back from renaming one of its presets (not after ✕ or a drop). */
+    if (view != NANO_VIEW_PRESETS && view != NANO_VIEW_RENAME) s_presets_return_bank = -1;
     if (view == NANO_VIEW_PRESETS) {
         build_presets(s_scr);
         presets_open();
@@ -1839,7 +1842,7 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
     set_line(s_ir_dot, s_ir, st->ir_short_name, st->cab_on, "No IR");
     snprintf(s_ir_name, sizeof(s_ir_name), "%s", st->ir_short_name);
     s_ir_on = st->cab_on;
-    if (s_ir_owner != st->active_preset) s_ir_known = false; /* the app reads the new preset's settings */
+    if (s_ir_owner != st->active_preset) s_ir_known = s_ir_unreadable = false; /* the app reads the new preset's settings */
     ir_refresh();
     s_gate_on = st->gate_on;
     lv_obj_set_style_bg_color(s_gate, lv_color_hex(st->gate_on ? nano_category_color(NANO_CAT_UTILITY) : C_OFF), 0);
@@ -1888,6 +1891,7 @@ void nano_ui_set_ir_settings(const nano_cab_settings_t *settings, int preset, bo
 {
     s_ir_owner = preset;
     s_ir_known = settings != NULL;
+    s_ir_unreadable = settings == NULL;
     if (settings) s_ir_set = *settings;
     ir_refresh_as(fresh);
 }

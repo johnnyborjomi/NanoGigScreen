@@ -604,7 +604,7 @@ static void ir_push_ui(void)
         return;
     }
     if (!lvgl_port_lock(50)) return;
-    nano_ui_set_ir_settings(&s_ir_last, s_ir_read_preset, s_ir_ui_fresh);
+    nano_ui_set_ir_settings(s_ir_last_valid ? &s_ir_last : NULL, s_ir_read_preset, s_ir_ui_fresh);
     lvgl_port_unlock();
     s_ir_ui_pending = false;
 }
@@ -629,19 +629,19 @@ static void request_ir_settings(void)
 static void ir_settings_reply(const uint8_t *payload, size_t len)
 {
     nano_cab_settings_t *cs = &s_ir_last;
-    if (!nano_decode_cab_settings(payload, len, cs)) {
-        s_ir_last_valid = false;
+    s_ir_last_valid = nano_decode_cab_settings(payload, len, cs);
+    if (!s_ir_last_valid) {
         ESP_LOGW(TAG, "<- IR settings without an IR (%u B)", (unsigned)len);
         ESP_LOG_BUFFER_HEX(TAG, payload, len < 64 ? len : 64);
-        return;
+    } else {
+        ESP_LOGI(TAG, "<- IR \"%s\" (%s, kind %u, slot %u): mic \"%s\" pos %u of %u mics, phase %s; n %.4f %.4f %.4f = %.1f dB, %.0f Hz, %.0f Hz",
+                 cs->ir_name, cs->factory ? "factory" : "user", (unsigned)cs->kind, s_state.cab_slot, cs->mic, cs->position + 1, cs->mic_count,
+                 cs->phase_inverted ? "inverted" : "normal",
+                 (double)cs->values[0], (double)cs->values[1], (double)cs->values[2], (double)nano_cab_value(NANO_CAB_LEVEL, cs->values[0]),
+                 (double)nano_cab_value(NANO_CAB_HIGH_PASS, cs->values[1]), (double)nano_cab_value(NANO_CAB_LOW_PASS, cs->values[2]));
     }
-    s_ir_last_valid = true;
-    ESP_LOGI(TAG, "<- IR \"%s\" (%s, kind %u, slot %u): mic \"%s\" pos %u of %u mics, phase %s; n %.4f %.4f %.4f = %.1f dB, %.0f Hz, %.0f Hz",
-             cs->ir_name, cs->factory ? "factory" : "user", (unsigned)cs->kind, s_state.cab_slot, cs->mic, cs->position + 1, cs->mic_count,
-             cs->phase_inverted ? "inverted" : "normal",
-             (double)cs->values[0], (double)cs->values[1], (double)cs->values[2], (double)nano_cab_value(NANO_CAB_LEVEL, cs->values[0]),
-             (double)nano_cab_value(NANO_CAB_HIGH_PASS, cs->values[1]), (double)nano_cab_value(NANO_CAB_LOW_PASS, cs->values[2]));
-    /* Asked after our last write: the pedal's word stands (EXIT reverts edits), even right after a touch. */
+    /* Shown either way: no IR replaces what the tab showed before. Asked after our last write: the pedal's word
+     * stands (EXIT reverts edits), even right after a touch. */
     s_ir_ui_fresh = s_ir_read_us > s_ir_written_us;
     s_ir_ui_pending = true;
     ir_push_ui();
