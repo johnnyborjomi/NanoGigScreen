@@ -22,6 +22,7 @@ static const char *TAG = "nano_ble";
 #define UUID_CCCD 0x2902
 #define PREFERRED_MTU 517
 #define CONNECT_TIMEOUT_MS 30000
+#define SETUP_TIMEOUT_MS 10000 /* connected to subscribed; the pedal takes well under a second */
 
 static nano_ble_callbacks_t s_cb;
 static volatile nano_ble_status_t s_status = NANO_BLE_IDLE;
@@ -32,6 +33,7 @@ static uint16_t s_c304_handle, s_c305_handle, s_c305_def_handle, s_c305_cccd;
 static uint16_t s_c305_end; /* last handle that can hold a c305 descriptor */
 static uint16_t s_mtu;
 static volatile bool s_enabled = true;
+static struct ble_npl_callout s_setup_timer; /* runs on the host task */
 
 static void set_status(nano_ble_status_t st, const char *detail)
 {
@@ -101,14 +103,28 @@ static void reset_link(void)
 
 /* ---- discovery chain: service -> characteristics -> c305 descriptors -> CCCD write ------ */
 
+/* A setup step that failed or could not start: drop the link (the DISCONNECT event rescans) instead of staying in
+ * CONNECTING with nothing left in flight. */
+static void setup_failed(const char *step, int rc)
+{
+    ESP_LOGE(TAG, "%s failed (%d): dropping the link", step, rc);
+    ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+}
+
+static void on_setup_timeout(struct ble_npl_event *ev)
+{
+    (void)ev;
+    if (s_status != NANO_BLE_READY && s_conn_handle != BLE_HS_CONN_HANDLE_NONE) setup_failed("setup in time", BLE_HS_ETIMEOUT);
+}
+
 static int on_cccd_written(uint16_t conn_handle, const struct ble_gatt_error *error, struct ble_gatt_attr *attr, void *arg)
 {
     (void)conn_handle; (void)attr; (void)arg;
     if (error->status != 0) {
-        ESP_LOGE(TAG, "subscribe c305 failed: %d", error->status);
-        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        setup_failed("subscribe c305", error->status);
         return 0;
     }
+    ble_npl_callout_stop(&s_setup_timer);
     ESP_LOGI(TAG, "c305 subscribed, c304 handle %u, MTU %u", s_c304_handle, s_mtu);
     set_status(NANO_BLE_READY, "Connected");
     return 0;
@@ -130,7 +146,7 @@ static int on_dsc(uint16_t conn_handle, const struct ble_gatt_error *error, uint
         }
         uint8_t notify_on[2] = { 0x01, 0x00 }; /* notify only; never enable indications (c306 mirror lag) */
         int rc = ble_gattc_write_flat(s_conn_handle, s_c305_cccd, notify_on, sizeof(notify_on), on_cccd_written, NULL);
-        if (rc) ESP_LOGE(TAG, "cccd write rc=%d", rc);
+        if (rc) setup_failed("cccd write", rc);
         return 0;
     }
     if (error->status != 0) {
@@ -162,7 +178,7 @@ static int on_chr(uint16_t conn_handle, const struct ble_gatt_error *error, cons
         /* Descriptors of c305 live between its value handle and the next characteristic / service end. */
         uint16_t end = s_c305_end ? s_c305_end : s_svc_end;
         int rc = ble_gattc_disc_all_dscs(s_conn_handle, s_c305_handle, end, on_dsc, NULL);
-        if (rc) ESP_LOGE(TAG, "disc dscs rc=%d", rc);
+        if (rc) setup_failed("descriptor discovery", rc);
         return 0;
     }
     ESP_LOGE(TAG, "characteristic discovery failed: %d", error->status);
@@ -185,7 +201,7 @@ static int on_svc(uint16_t conn_handle, const struct ble_gatt_error *error, cons
             return 0;
         }
         int rc = ble_gattc_disc_all_chrs(s_conn_handle, s_svc_start, s_svc_end, on_chr, NULL);
-        if (rc) ESP_LOGE(TAG, "disc chrs rc=%d", rc);
+        if (rc) setup_failed("characteristic discovery", rc);
         return 0;
     }
     ESP_LOGE(TAG, "service discovery failed: %d", error->status);
@@ -205,7 +221,7 @@ static int on_mtu(uint16_t conn_handle, const struct ble_gatt_error *error, uint
     }
     ble_uuid16_t svc = BLE_UUID16_INIT(UUID_SERVICE_A002);
     int rc = ble_gattc_disc_svc_by_uuid(s_conn_handle, &svc.u, on_svc, NULL);
-    if (rc) ESP_LOGE(TAG, "disc svc rc=%d", rc);
+    if (rc) setup_failed("service discovery", rc);
     return 0;
 }
 
@@ -227,7 +243,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
         return 0;
     }
-    case BLE_GAP_EVENT_CONNECT:
+    case BLE_GAP_EVENT_CONNECT: {
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "connect failed: %d", event->connect.status);
             reset_link();
@@ -236,11 +252,15 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
         s_conn_handle = event->connect.conn_handle;
         set_status(NANO_BLE_CONNECTING, "Connected, setting up");
+        ble_npl_callout_reset(&s_setup_timer, ble_npl_time_ms_to_ticks32(SETUP_TIMEOUT_MS));
         /* 517-byte MTU first: the pedal sends 512-byte notifications. */
-        ble_gattc_exchange_mtu(s_conn_handle, on_mtu, NULL);
+        int rc = ble_gattc_exchange_mtu(s_conn_handle, on_mtu, NULL);
+        if (rc) setup_failed("MTU exchange", rc);
         return 0;
+    }
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGW(TAG, "disconnected: reason %d", event->disconnect.reason);
+        ble_npl_callout_stop(&s_setup_timer);
         reset_link();
         if (s_enabled) set_status(NANO_BLE_SCANNING, "Link lost");
         start_scan();
@@ -298,6 +318,7 @@ int nano_ble_start(const nano_ble_callbacks_t *cb)
         ESP_LOGE(TAG, "nimble_port_init rc=%d", rc);
         return rc;
     }
+    ble_npl_callout_init(&s_setup_timer, nimble_port_get_dflt_eventq(), on_setup_timeout, NULL);
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sm_bonding = 0; /* the pedal needs no pairing */
@@ -343,6 +364,11 @@ bool nano_ble_enabled(void)
 int nano_ble_write(const uint8_t *data, size_t len)
 {
     if (s_status != NANO_BLE_READY || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return BLE_HS_ENOTCONN;
+    uint16_t mtu = s_mtu ? s_mtu : BLE_ATT_MTU_DFLT;
+    if (len > (size_t)(mtu - 3)) {
+        ESP_LOGW(TAG, "c304 write of %u B does not fit MTU %u", (unsigned)len, mtu);
+        return BLE_HS_EMSGSIZE;
+    }
     int rc = ble_gattc_write_flat(s_conn_handle, s_c304_handle, data, (uint16_t)len, NULL, NULL);
     if (rc) ESP_LOGW(TAG, "c304 write rc=%d", rc);
     return rc;
@@ -354,6 +380,8 @@ void nano_ble_shutdown(void)
     /* Let the pedal see a clean disconnect before the host goes away. */
     for (int i = 0; i < 20 && s_conn_handle != BLE_HS_CONN_HANDLE_NONE; i++) vTaskDelay(pdMS_TO_TICKS(50));
     int rc = nimble_port_stop(); /* nimble_port_run returns; the host task deletes itself */
+    ble_npl_callout_stop(&s_setup_timer); /* its event queue goes away with the host */
+    ble_npl_callout_deinit(&s_setup_timer);
     if (rc) ESP_LOGW(TAG, "nimble_port_stop rc=%d", rc);
     nimble_port_deinit(); /* host + controller */
     esp_err_t err = esp_bt_mem_release(ESP_BT_MODE_BTDM);

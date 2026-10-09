@@ -313,10 +313,15 @@ void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)
         return;
     case NANO_MSG_RENAME_REPLY:
         /* `08 06 18 <preset> 20 <1 = ok>` (2026-10-08) */
+    {
+        /* Absent = preset 1 (proto3 leaves zeros out); present but unreadable or out of range = no reply. */
+        int64_t preset = nano_has_field(body, plen, 3) ? nano_first_varint(body, plen, 3, -1) : 0;
+        if (preset < 0 || preset >= NANO_PRESET_COUNT) return;
         out->kind = NANO_EV_RENAME_REPLY;
-        out->preset = (uint8_t)nano_first_varint(body, plen, 3, 0);
+        out->preset = (uint8_t)preset;
         out->ok = nano_first_varint(body, plen, 4, 0) == 1;
         return;
+    }
     case NANO_MSG_OUTPUTS_MUTE_ACK:
         out->kind = NANO_EV_OUTPUTS_MUTE_ACK;
         return;

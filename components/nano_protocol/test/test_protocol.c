@@ -555,6 +555,39 @@ static void test_expression(void)
     CHECK(nano_build_exp_assign_request(m, sizeof(m), 64) == 0);
 }
 
+/* Garbage from the radio must never come out as an out-of-range index. */
+static void test_malformed(void)
+{
+    printf("malformed input\n");
+    nano_event_t ev;
+    /* Preset changed, field 4 = 2^63 + 200 (10-byte varint): read as absent, never as a negative preset (whose
+     * low byte, 200, would pass as an index). */
+    const uint8_t huge[] = { 0x11, 0xC0, 0x08, 0x01, 0x20, 0xC8, 0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0x1D, 0x00, 0x00, 0x00 };
+    nano_decode_event(huge, sizeof(huge), &ev);
+    CHECK(ev.kind != NANO_EV_PRESET_CHANGED || ev.preset < NANO_PRESET_COUNT);
+    /* Truncated varint. */
+    const uint8_t cut[] = { 0x07, 0xC0, 0x08, 0x01, 0x20, 0x80, 0x1D, 0x00, 0x00, 0x00 };
+    nano_decode_event(cut, sizeof(cut), &ev);
+    CHECK(ev.kind != NANO_EV_PRESET_CHANGED || ev.preset < NANO_PRESET_COUNT);
+    /* Rename reply naming preset 200 (and 2^63): no reply at all. */
+    const uint8_t far[] = { 0x0B, 0xC0, 0x08, 0x06, 0x18, 0xC8, 0x01, 0x20, 0x01, 0x70, 0x00, 0x00, 0x00 };
+    nano_decode_event(far, sizeof(far), &ev);
+    CHECK(ev.kind != NANO_EV_RENAME_REPLY);
+    const uint8_t neg[] = { 0x13, 0xC0, 0x08, 0x06, 0x18, 0xC8, 0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0x20, 0x01, 0x70, 0x00, 0x00, 0x00 };
+    nano_decode_event(neg, sizeof(neg), &ev);
+    CHECK(ev.kind != NANO_EV_RENAME_REPLY);
+    /* Preset 1: proto3 leaves the zero index out; still a reply. */
+    const uint8_t first[] = { 0x08, 0xC0, 0x08, 0x06, 0x20, 0x01, 0x70, 0x00, 0x00, 0x00 };
+    nano_decode_event(first, sizeof(first), &ev);
+    CHECK(ev.kind == NANO_EV_RENAME_REPLY && ev.preset == 0 && ev.ok);
+    /* A length prefix far past the end: the state / IR decoders stop, nothing is read out of bounds. */
+    const uint8_t longlen[] = { 0x22, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x41, 0x42 };
+    nano_state_t st;
+    CHECK(!nano_decode_state(longlen, sizeof(longlen), &st));
+    nano_cab_settings_t cs;
+    CHECK(!nano_decode_cab_settings(longlen, sizeof(longlen), &cs));
+}
+
 int main(void)
 {
     test_varint();
@@ -567,6 +600,7 @@ int main(void)
     test_metadata();
     test_labels_and_models();
     test_expression();
+    test_malformed();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

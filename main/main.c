@@ -42,6 +42,12 @@ static const char *TAG = "nanogig";
 
 #define PACKET_CAP 514              /* MTU 517 - 3 */
 #define PACKET_QUEUE_LEN 12
+#define CMD_QUEUE_LEN 24            /* screen / link commands: their own queue, so a dump in flight never crowds them out */
+#define UI_LOCK_MS 30               /* screen pushes wait this long for the display; a miss is retried next loop */
+#define VIEW_LOCK_MS 300            /* the pedal opens / closes a view (tuner, tap tempo): rare, must not be missed */
+#define LOOP_MS 20
+#define BRIGHTNESS_SAVE_DELAY_US (1000 * 1000) /* flash write once the slider rests */
+#define MARK_VALID_AFTER_US (60 * 1000 * 1000) /* a new image that runs this long (or links) is kept */
 #define ASSEMBLER_CAP (20 * 1024)   /* the metadata dump is ~17 KB */
 #define DEBOUNCE_MS 400
 #define ENCODER_DEBOUNCE_MS 120     /* capture / IR scrolling: the name is shown from the cache at once, the dump confirms */
@@ -62,19 +68,19 @@ typedef struct {
     uint8_t data[PACKET_CAP];
 } packet_t;
 
-typedef enum { MSG_PACKET, MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT, MSG_CAPTURE_VOLUME, MSG_RENAME, MSG_IR_VIEW, MSG_CAB_SETTING, MSG_CAB_PHASE, MSG_CAB_MIC } msg_kind_t;
+typedef enum { MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_TOGGLE_FX, MSG_TUNER, MSG_LINK, MSG_BANK_SIZE, MSG_TOGGLE_GATE, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS, MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE, MSG_SELECT, MSG_CAPTURE_VOLUME, MSG_RENAME, MSG_IR_VIEW, MSG_CAB_SETTING, MSG_CAB_PHASE, MSG_CAB_MIC } msg_kind_t;
+#define MSG_TEXT_CAP 32
+_Static_assert(NANO_PRESET_NAME_MAX + 1 <= MSG_TEXT_CAP, "a preset name fits a message");
 typedef struct {
     msg_kind_t kind;
     nano_ble_status_t status;
-    char detail[32];
     uint8_t fx_slot;
     bool fx_on;
     bool flag;      /* MSG_TUNER: on, MSG_LINK: connect, MSG_OUTPUTS_MUTE: mute, MSG_EXP_SHOW: show, MSG_ROTATE: 180 degrees, MSG_IR_VIEW: open */
     int delta;      /* MSG_TEMPO_DELTA */
     uint8_t value;  /* MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_BRIGHTNESS, MSG_SELECT / MSG_RENAME (preset index), MSG_CAPTURE_VOLUME (raw), MSG_CAB_SETTING (nano_cab_param_t), MSG_CAB_MIC (position) */
     float number;   /* MSG_CAB_SETTING: the pedal's 0..1 */
-    char text[NANO_PRESET_NAME_MAX + 1]; /* MSG_RENAME: the new name, MSG_CAB_MIC: the microphone */
-    packet_t pkt;
+    char text[MSG_TEXT_CAP]; /* MSG_STATUS: the detail, MSG_RENAME: the new name, MSG_CAB_MIC: the microphone */
 } app_msg_t;
 
 typedef struct {
@@ -82,7 +88,8 @@ typedef struct {
     nano_metadata_t meta;
 } meta_blob_t;
 
-static QueueHandle_t s_queue;
+static QueueHandle_t s_packets, s_cmds; /* both feed the app task through s_inbox, in arrival order */
+static QueueSetHandle_t s_inbox;
 /* Big buffers live on the heap: the ESP32's static DRAM segment is small and NimBLE + LVGL fill it. */
 static uint8_t *s_asm_buf;
 static nano_metadata_t *s_meta_scratch;
@@ -100,7 +107,6 @@ static int64_t s_req_fifo[REQ_FIFO_LEN];
 static int s_req_head, s_req_count;
 static int64_t s_last_pitch_us;     /* last tuner reading; the tuner view clears after silence */
 static bool s_tuner_cleared = true;
-static bool s_tuner_muted;          /* what we ask for / what the pedal last reported */
 static bool s_tuner_view_ours;      /* the view was opened from the menu (we sent tuner-on) */
 static int64_t s_tuner_off_us;      /* when we last sent tuner-off */
 /* Preset select in flight: the next tap builds on it, a dump that still shows the old preset does not undo it. */
@@ -140,6 +146,42 @@ static int s_exp_assign_tries;       /* unanswered requests for the current pres
 static nano_exp_assignments_t s_exp_assign;
 #define EXP_ASSIGN_TIMEOUT_US (1500 * 1000)
 #define EXP_ASSIGN_MAX_TRIES 3
+
+/*
+ * Screen parts the app task keeps up to date. Code that changes what a part shows marks it (ui_mark); ui_sync()
+ * pushes every marked part under one LVGL lock, now or, while the display is busy, on the next loop: a busy display
+ * delays an update, never loses it. Each part is pushed from the app's current state, so the latest value wins.
+ * Live readings (tuner pitch, expression values) go straight to the screen and may skip a frame.
+ */
+enum {
+    UI_LINK = 1u << 0,        /* status line, greyed out, connect page on a drop */
+    UI_STATE = 1u << 1,       /* the gig view from s_state */
+    UI_SYNCED = 1u << 2,      /* a state of this link is on screen: un-grey, close the connect page */
+    UI_PRESET = 1u << 3,      /* preset label and name only (select, label style, bank size, rename) */
+    UI_FOOTSWITCHES = 1u << 4,
+    UI_OUTPUTS = 1u << 5,     /* outputs 1/2 muted badge */
+    UI_EXP_POS = 1u << 6,     /* expression position (while shown) */
+    UI_EXP_CLEAR = 1u << 7,   /* expression values unknown */
+    UI_EXP_ASSIGN = 1u << 8,  /* expression targets of the shown preset */
+    UI_IR = 1u << 9,          /* IR tab settings */
+    UI_RENAME = 1u << 10,     /* the rename page's answer */
+    UI_TUNER_MUTE = 1u << 11,
+    UI_ROTATION = 1u << 12,
+};
+static uint32_t s_ui_dirty;
+/* What some parts show, beyond s_state / s_meta_blob. */
+static bool s_outputs_muted;
+static bool s_tuner_muted;          /* what we ask for / what the pedal last reported */
+static bool s_rotate_180;
+static char s_status_text[48] = "Starting Bluetooth";
+static uint8_t s_brightness;
+static int64_t s_brightness_save_us; /* 0 = saved */
+static void ui_sync(void);
+static void ui_mark(uint32_t parts)
+{
+    s_ui_dirty |= parts;
+    ui_sync();
+}
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -232,65 +274,70 @@ static void meta_save(void)
     ESP_LOGI(TAG, "metadata cache %s", err == ESP_OK ? "saved" : "save failed");
 }
 
-/* ---- BLE callbacks (NimBLE host task): copy and post ---------------------- */
+/* ---- BLE / screen callbacks: copy and post to the app task ----------------- */
+
+/* Commands come from the LVGL task (which must not block) and the NimBLE host task (status). A full queue means
+ * the app task is stuck: logged, never silent. */
+static void post(const app_msg_t *m, TickType_t wait)
+{
+    if (xQueueSend(s_cmds, m, wait) != pdTRUE) ESP_LOGW(TAG, "command queue full, dropped kind %d", (int)m->kind);
+}
+
+static void post_kind(msg_kind_t kind) { app_msg_t m = { .kind = kind }; post(&m, 0); }
+static void post_flag(msg_kind_t kind, bool flag) { app_msg_t m = { .kind = kind, .flag = flag }; post(&m, 0); }
+static void post_value(msg_kind_t kind, uint8_t value) { app_msg_t m = { .kind = kind, .value = value }; post(&m, 0); }
 
 static void ble_on_status(nano_ble_status_t status, const char *detail)
 {
     app_msg_t m = { .kind = MSG_STATUS, .status = status };
-    strncpy(m.detail, detail ? detail : "", sizeof(m.detail) - 1);
-    xQueueSend(s_queue, &m, 0);
+    strlcpy(m.text, detail ? detail : "", sizeof(m.text));
+    post(&m, pdMS_TO_TICKS(50));
 }
 
 static void ble_on_notify(const uint8_t *data, size_t len)
 {
     if (len > PACKET_CAP) len = PACKET_CAP;
-    /* Stack frames of 600 B are fine on the host task; the queue copies by value. */
-    static app_msg_t m; /* host task only */
-    m.kind = MSG_PACKET;
-    m.pkt.len = (uint16_t)len;
-    memcpy(m.pkt.data, data, len);
-    if (xQueueSend(s_queue, &m, pdMS_TO_TICKS(50)) != pdTRUE) ESP_LOGW(TAG, "packet queue full, dropped %u B", (unsigned)len);
+    static packet_t pkt; /* host task only; the queue copies by value */
+    pkt.len = (uint16_t)len;
+    memcpy(pkt.data, data, len);
+    if (xQueueSend(s_packets, &pkt, pdMS_TO_TICKS(50)) != pdTRUE) ESP_LOGW(TAG, "packet queue full, dropped %u B", (unsigned)len);
 }
 
-static void ui_on_prev(void) { app_msg_t m = { .kind = MSG_PREV }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_next(void) { app_msg_t m = { .kind = MSG_NEXT }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_select(uint8_t idx) { app_msg_t m = { .kind = MSG_SELECT, .value = idx }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_prev(void) { post_kind(MSG_PREV); }
+static void ui_on_next(void) { post_kind(MSG_NEXT); }
+static void ui_on_select(uint8_t idx) { post_value(MSG_SELECT, idx); }
 static void ui_on_rename(uint8_t idx, const char *name)
 {
     app_msg_t m = { .kind = MSG_RENAME, .value = idx };
-    snprintf(m.text, sizeof(m.text), "%s", name);
-    xQueueSend(s_queue, &m, 0);
+    strlcpy(m.text, name, sizeof(m.text));
+    post(&m, 0);
 }
-static void ui_on_capture_volume(uint8_t raw) { app_msg_t m = { .kind = MSG_CAPTURE_VOLUME, .value = raw }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_ir_view(bool open) { app_msg_t m = { .kind = MSG_IR_VIEW, .flag = open }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_cab_setting(uint8_t param, float n) { app_msg_t m = { .kind = MSG_CAB_SETTING, .value = param, .number = n }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_cab_phase(bool inverted) { app_msg_t m = { .kind = MSG_CAB_PHASE, .flag = inverted }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_capture_volume(uint8_t raw) { post_value(MSG_CAPTURE_VOLUME, raw); }
+static void ui_on_ir_view(bool open) { post_flag(MSG_IR_VIEW, open); }
+static void ui_on_cab_setting(uint8_t param, float n) { app_msg_t m = { .kind = MSG_CAB_SETTING, .value = param, .number = n }; post(&m, 0); }
+static void ui_on_cab_phase(bool inverted) { post_flag(MSG_CAB_PHASE, inverted); }
 static void ui_on_cab_mic(uint8_t position, const char *mic)
 {
     app_msg_t m = { .kind = MSG_CAB_MIC, .value = position };
-    snprintf(m.text, sizeof(m.text), "%s", mic);
-    xQueueSend(s_queue, &m, 0);
+    strlcpy(m.text, mic, sizeof(m.text));
+    post(&m, 0);
 }
-static void ui_on_toggle_fx(uint8_t slot, bool on)
-{
-    app_msg_t m = { .kind = MSG_TOGGLE_FX, .fx_slot = slot, .fx_on = on };
-    xQueueSend(s_queue, &m, 0);
-}
-static void ui_on_toggle_gate(bool on) { app_msg_t m = { .kind = MSG_TOGGLE_GATE, .fx_on = on }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_tempo_view(bool open) { app_msg_t m = { .kind = MSG_TEMPO_VIEW, .flag = open }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_tempo_delta(int d) { app_msg_t m = { .kind = MSG_TEMPO_DELTA, .delta = d }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_tuner_mute(bool mute) { app_msg_t m = { .kind = MSG_TUNER_MUTE, .flag = mute }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_tuner(bool on) { app_msg_t m = { .kind = MSG_TUNER, .flag = on }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_link(bool connect) { app_msg_t m = { .kind = MSG_LINK, .flag = connect }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_bank_size(uint8_t v) { app_msg_t m = { .kind = MSG_BANK_SIZE, .value = v }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_label_style(uint8_t v) { app_msg_t m = { .kind = MSG_LABEL_STYLE, .value = v }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_outputs_mute(bool mute) { app_msg_t m = { .kind = MSG_OUTPUTS_MUTE, .flag = mute }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_expression_show(bool show) { app_msg_t m = { .kind = MSG_EXP_SHOW, .flag = show }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_rotation(bool rot) { app_msg_t m = { .kind = MSG_ROTATE, .flag = rot }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_brightness(uint8_t v) { app_msg_t m = { .kind = MSG_BRIGHTNESS, .value = v }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_toggle_fx(uint8_t slot, bool on) { app_msg_t m = { .kind = MSG_TOGGLE_FX, .fx_slot = slot, .fx_on = on }; post(&m, 0); }
+static void ui_on_toggle_gate(bool on) { app_msg_t m = { .kind = MSG_TOGGLE_GATE, .fx_on = on }; post(&m, 0); }
+static void ui_on_tempo_view(bool open) { post_flag(MSG_TEMPO_VIEW, open); }
+static void ui_on_tempo_delta(int d) { app_msg_t m = { .kind = MSG_TEMPO_DELTA, .delta = d }; post(&m, 0); }
+static void ui_on_tuner_mute(bool mute) { post_flag(MSG_TUNER_MUTE, mute); }
+static void ui_on_tuner(bool on) { post_flag(MSG_TUNER, on); }
+static void ui_on_link(bool connect) { post_flag(MSG_LINK, connect); }
+static void ui_on_bank_size(uint8_t v) { post_value(MSG_BANK_SIZE, v); }
+static void ui_on_label_style(uint8_t v) { post_value(MSG_LABEL_STYLE, v); }
+static void ui_on_outputs_mute(bool mute) { post_flag(MSG_OUTPUTS_MUTE, mute); }
+static void ui_on_expression_show(bool show) { post_flag(MSG_EXP_SHOW, show); }
+static void ui_on_rotation(bool rot) { post_flag(MSG_ROTATE, rot); }
+static void ui_on_brightness(uint8_t v) { post_value(MSG_BRIGHTNESS, v); }
 /* Update mode: opening shuts Bluetooth down (blocking, so on the app task); the rest goes straight to the update task. */
-static void ui_on_update_open(void) { app_msg_t m = { .kind = MSG_UPDATE_OPEN }; xQueueSend(s_queue, &m, 0); }
-static void ui_on_update_close(void) { app_msg_t m = { .kind = MSG_UPDATE_CLOSE }; xQueueSend(s_queue, &m, 0); }
+static void ui_on_update_open(void) { post_kind(MSG_UPDATE_OPEN); }
+static void ui_on_update_close(void) { post_kind(MSG_UPDATE_CLOSE); }
 static void ui_on_wifi_scan(void) { nano_ota_scan(); }
 static void ui_on_wifi_join(const char *ssid, const char *pass) { nano_ota_join(ssid, pass); }
 static void ui_on_update_check(void) { nano_ota_check(); }
@@ -299,11 +346,22 @@ static void ui_on_update_install(void) { nano_ota_install(); }
 /* ---- firmware update ---------------------------------------------------------- */
 
 static bool s_update_mode;
+static bool s_image_kept; /* the running image is marked valid (no rollback) */
 
-/* Update task -> update view. */
+/* A freshly installed image is kept once it links to the pedal or runs a minute; one that crashes before that is
+ * rolled back by the bootloader on the next start. */
+static void keep_image(void)
+{
+    if (s_image_kept) return;
+    s_image_kept = true;
+    nano_ota_mark_valid();
+}
+
+/* Update task -> update view. Waits for the display as long as it takes: the LVGL task never waits on the update
+ * task (its commands are posted without blocking), and a lost INSTALLED / ERROR would leave the page hanging. */
 static void ota_on_event(const nano_ota_event_t *ev)
 {
-    if (!lvgl_port_lock(200)) return;
+    if (!lvgl_port_lock(0)) return;
     switch (ev->kind) {
     case NANO_OTA_EV_SCANNING:
         nano_ui_update_show_networks(NULL, 0, true);
@@ -359,6 +417,7 @@ static void enter_update_mode(void)
     if (s_update_mode) return;
     s_update_mode = true;
     ESP_LOGI(TAG, "update mode: Bluetooth off, Wi-Fi on");
+    keep_image(); /* the next image can only be written once this one is no longer pending */
     nano_ble_shutdown();
     /* The pedal is gone until the restart: its buffers (~27 KB) become download headroom. The app loop
      * skips the assembler from here on (packets still queued from the link are dropped). */
@@ -368,7 +427,7 @@ static void enter_update_mode(void)
     s_meta_scratch = NULL;
     ESP_LOGI(TAG, "pedal buffers released, free heap %u B", (unsigned)esp_get_free_heap_size());
     if (nano_ota_start(ota_on_event) != 0) {
-        if (lvgl_port_lock(100)) {
+        if (lvgl_port_lock(0)) {
             nano_ui_update_status(NANO_UPDATE_ERROR, "Wi-Fi failed to start", 0);
             lvgl_port_unlock();
         }
@@ -391,6 +450,8 @@ static void request_state(void)
     if (nano_ble_write(NANO_REQ_STATE, sizeof(NANO_REQ_STATE)) == 0) {
         ESP_LOGI(TAG, "-> state request");
         if (s_req_count < REQ_FIFO_LEN) s_req_fifo[(s_req_head + s_req_count++) % REQ_FIFO_LEN] = now;
+    } else {
+        s_state_due_us = now + STATE_MIN_GAP_US; /* the write failed: retried, not lost */
     }
 }
 
@@ -404,10 +465,12 @@ static int64_t pop_request_time(void)
     return t;
 }
 
+/* A failed write leaves the flag clear: the next state dump asks again. */
 static void request_metadata(void)
 {
+    if (nano_ble_write(NANO_REQ_METADATA, sizeof(NANO_REQ_METADATA)) != 0) return;
     s_meta_requested_this_link = true;
-    if (nano_ble_write(NANO_REQ_METADATA, sizeof(NANO_REQ_METADATA)) == 0) ESP_LOGI(TAG, "-> metadata request (~6 s)");
+    ESP_LOGI(TAG, "-> metadata request (~6 s)");
 }
 
 static void schedule_settings(uint32_t delay_ms)
@@ -419,8 +482,12 @@ static void request_settings(void)
 {
     s_settings_due_us = 0;
     if (!s_link_ready) return;
+    if (nano_ble_write(NANO_REQ_SETTINGS, sizeof(NANO_REQ_SETTINGS)) != 0) {
+        schedule_settings(SETTINGS_READ_DELAY_MS); /* retried */
+        return;
+    }
     s_settings_read_this_link = true;
-    if (nano_ble_write(NANO_REQ_SETTINGS, sizeof(NANO_REQ_SETTINGS)) == 0) ESP_LOGI(TAG, "-> settings request");
+    ESP_LOGI(TAG, "-> settings request");
 }
 
 /* Outputs 1/2 mute: `08 C0 08 01 68 <1/0> 43 00 00 00` (Cortex Cloud's global switch); the 0x44 ack and the
@@ -461,24 +528,10 @@ static void exp_assign_tick(void)
     request_exp_assignments(s_state.active_preset);
 }
 
-/* Tile tracks belong to the shown preset: push its assignments, or none while they are unknown. */
-static void exp_push_assignments(uint8_t shown_preset)
-{
-    bool known = s_exp_assign_preset >= 0 && s_exp_assign_preset == shown_preset;
-    if (lvgl_port_lock(50)) {
-        nano_ui_set_expression_assignments(known ? &s_exp_assign : NULL);
-        lvgl_port_unlock();
-    }
-}
-
 static void exp_reset(void)
 {
     s_exp_pos = -1;
-    if (lvgl_port_lock(50)) {
-        nano_ui_set_expression(-1);
-        nano_ui_set_expression_values(NULL);
-        lvgl_port_unlock();
-    }
+    ui_mark(UI_EXP_POS | UI_EXP_CLEAR | UI_EXP_ASSIGN);
 }
 
 static void set_outputs_mute(bool mute)
@@ -487,7 +540,7 @@ static void set_outputs_mute(bool mute)
     uint8_t frame[10];
     size_t n = nano_build_outputs_mute(frame, sizeof(frame), mute);
     if (n && nano_ble_write(frame, n) == 0) ESP_LOGI(TAG, "-> outputs 1/2 %s", mute ? "mute" : "on");
-    schedule_settings(SETTINGS_READ_DELAY_MS);
+    schedule_settings(SETTINGS_READ_DELAY_MS); /* also puts the badge back if the write failed */
 }
 
 static void schedule_state(uint32_t delay_ms)
@@ -536,10 +589,7 @@ static void select_preset_index(int idx)
     s_pending_since_us = esp_timer_get_time();
     s_state.active_preset = (uint8_t)idx; /* optimistic; the dump confirms */
     s_exp_assign_tries = 0;
-    if (lvgl_port_lock(50)) {
-        nano_ui_set_preset((uint8_t)idx, s_meta_valid ? &s_meta_blob.meta : NULL);
-        lvgl_port_unlock();
-    }
+    ui_mark(UI_PRESET);
     if (!s_select_inflight) send_select(idx);
     else ESP_LOGI(TAG, "   preset %d held until the ack", idx + 1);
 }
@@ -562,10 +612,7 @@ static void toggle_fx(uint8_t slot, bool currently_on)
         ESP_LOGI(TAG, "-> fx slot %u %s", slot, currently_on ? "off" : "on");
         s_state.fx_on[slot] = !currently_on; /* optimistic; a dump requested after this write confirms */
         s_fx_written_us[slot] = esp_timer_get_time();
-        if (lvgl_port_lock(50)) {
-            nano_ui_set_state(&s_state, s_meta_valid ? &s_meta_blob.meta : NULL);
-            lvgl_port_unlock();
-        }
+        ui_mark(UI_STATE);
         schedule_state(CONFIRM_MS);
     }
 }
@@ -586,82 +633,104 @@ static void set_capture_volume(uint8_t raw)
 }
 
 /* IR settings (Level, High pass, Low pass; frames from DrD85, verified 2026-10-08). The state dumps do not carry
- * them: they are read while the IR tab shows, on open and again for another preset or IR slot. */
+ * them: they are read while the IR tab shows, on open and again for another preset or IR slot. Replies come back
+ * in request order, so each one is matched to the request it answers (preset, slot, when it was asked). */
+typedef struct {
+    int preset, slot;   /* slot = state field 12 while the IR is on, 0 while off */
+    int64_t sent_us;
+} ir_read_t;
+#define IR_READS_MAX 4
 static bool s_ir_view;
-static int s_ir_read_preset = -1, s_ir_read_slot = -1; /* what the last read asked about */
-static int64_t s_ir_read_us, s_ir_written_us;              /* last read sent, last setting written */
-static nano_cab_settings_t s_ir_last;                      /* the last answer (a microphone write names its IR) */
+static ir_read_t s_ir_reads[IR_READS_MAX]; /* sent, unanswered; oldest first */
+static int s_ir_reads_n;
+static ir_read_t s_ir_asked = { -1, -1, 0 }; /* the latest read sent (or skipped: IR off) */
+static int64_t s_ir_written_us;              /* last setting written */
+static nano_cab_settings_t s_ir_last;        /* the last answer (a microphone write names its IR) */
+static ir_read_t s_ir_last_for;              /* the read it answered */
 static bool s_ir_last_valid;
-static bool s_ir_ui_pending, s_ir_ui_fresh;                /* s_ir_last still to be shown (the display was busy) */
+static bool s_ir_last_fresh;                 /* asked after the last write: the pedal's word stands (EXIT reverts edits) */
 
-/* Hand the last answer to the IR tab; retried from the loop while the display is busy (a dropped answer left
- * the tab on edits that EXIT had reverted, 2026-10-09). */
-static void ir_push_ui(void)
+static int ir_slot_now(void) { return s_state.cab_on ? s_state.cab_slot : 0; }
+
+static ir_read_t ir_reads_pop(void)
 {
-    if (!s_ir_ui_pending) return;
-    if (!s_ir_view) {
-        s_ir_ui_pending = false;
-        return;
-    }
-    if (!lvgl_port_lock(50)) return;
-    nano_ui_set_ir_settings(s_ir_last_valid ? &s_ir_last : NULL, s_ir_read_preset, s_ir_ui_fresh);
-    lvgl_port_unlock();
-    s_ir_ui_pending = false;
+    ir_read_t first = s_ir_reads[0];
+    s_ir_reads_n--;
+    memmove(s_ir_reads, s_ir_reads + 1, sizeof(s_ir_reads[0]) * (size_t)s_ir_reads_n);
+    return first;
+}
+
+static void ir_reads_reset(void)
+{
+    s_ir_reads_n = 0;
+    s_ir_asked = (ir_read_t){ -1, -1, 0 };
+    s_ir_last_valid = false;
 }
 
 static void request_ir_settings(void)
 {
     if (!s_link_ready || !s_state_valid) return;
-    s_ir_read_preset = s_state.active_preset;
-    s_ir_read_slot = s_state.cab_on ? s_state.cab_slot : 0;
+    s_ir_asked = (ir_read_t){ s_state.active_preset, ir_slot_now(), esp_timer_get_time() };
     if (!s_state.cab_on) return; /* an IR that is off has no settings to show (the tab says so) */
     /* State field 12 as the slot: 1..5 on the pedal's IR list, 6 seen for most presets (2026-10-08). The reply
      * names the IR it describes, so the log shows whether it is the preset's own. */
     uint8_t slot = s_state.cab_slot >= 1 ? s_state.cab_slot : 1;
     uint8_t frame[16];
     size_t n = nano_build_cab_settings_request(frame, sizeof(frame), slot);
-    if (n && nano_ble_write(frame, n) == 0) {
-        s_ir_read_us = esp_timer_get_time();
-        ESP_LOGI(TAG, "-> IR settings request (preset %u, slot %u)", s_state.active_preset + 1, slot);
+    if (!n || nano_ble_write(frame, n) != 0) {
+        s_ir_asked.preset = -1; /* not sent: the next state asks again */
+        return;
     }
+    if (s_ir_reads_n == IR_READS_MAX) ir_reads_pop(); /* never answered: forget the oldest */
+    s_ir_reads[s_ir_reads_n++] = s_ir_asked;
+    ESP_LOGI(TAG, "-> IR settings request (preset %u, slot %u)", s_state.active_preset + 1, slot);
 }
 
 static void ir_settings_reply(const uint8_t *payload, size_t len)
 {
+    if (s_ir_reads_n > 0) {
+        s_ir_last_for = ir_reads_pop();
+    } else {
+        s_ir_last_for = (ir_read_t){ s_state.active_preset, ir_slot_now(), 0 }; /* unasked: old as far as we know */
+    }
     nano_cab_settings_t *cs = &s_ir_last;
     s_ir_last_valid = nano_decode_cab_settings(payload, len, cs);
     if (!s_ir_last_valid) {
         ESP_LOGW(TAG, "<- IR settings without an IR (%u B)", (unsigned)len);
         ESP_LOG_BUFFER_HEX(TAG, payload, len < 64 ? len : 64);
     } else {
-        ESP_LOGI(TAG, "<- IR \"%s\" (%s, kind %u, slot %u): mic \"%s\" pos %u of %u mics, phase %s; n %.4f %.4f %.4f = %.1f dB, %.0f Hz, %.0f Hz",
-                 cs->ir_name, cs->factory ? "factory" : "user", (unsigned)cs->kind, s_state.cab_slot, cs->mic, cs->position + 1, cs->mic_count,
+        ESP_LOGI(TAG, "<- IR \"%s\" (%s, kind %u, preset %d slot %d): mic \"%s\" pos %u of %u mics, phase %s; n %.4f %.4f %.4f = %.1f dB, %.0f Hz, %.0f Hz",
+                 cs->ir_name, cs->factory ? "factory" : "user", (unsigned)cs->kind, s_ir_last_for.preset + 1, s_ir_last_for.slot, cs->mic, cs->position + 1, cs->mic_count,
                  cs->phase_inverted ? "inverted" : "normal",
                  (double)cs->values[0], (double)cs->values[1], (double)cs->values[2], (double)nano_cab_value(NANO_CAB_LEVEL, cs->values[0]),
                  (double)nano_cab_value(NANO_CAB_HIGH_PASS, cs->values[1]), (double)nano_cab_value(NANO_CAB_LOW_PASS, cs->values[2]));
     }
-    /* Shown either way: no IR replaces what the tab showed before. Asked after our last write: the pedal's word
-     * stands (EXIT reverts edits), even right after a touch. */
-    s_ir_ui_fresh = s_ir_read_us > s_ir_written_us;
-    s_ir_ui_pending = true;
-    ir_push_ui();
+    /* Shown either way: no IR replaces what the tab showed before. */
+    s_ir_last_fresh = s_ir_last_for.sent_us > s_ir_written_us;
+    ui_mark(UI_IR);
 }
 
 static void set_cab_phase(bool inverted)
 {
     if (!s_link_ready || !s_state_valid || !s_state.cab_on) return;
     uint8_t frame[8];
-    if (nano_build_cab_phase(frame, sizeof(frame), inverted) && nano_ble_write(frame, sizeof(frame)) == 0) {
+    size_t n = nano_build_cab_phase(frame, sizeof(frame), inverted);
+    if (n && nano_ble_write(frame, n) == 0) {
         s_ir_written_us = esp_timer_get_time();
         ESP_LOGI(TAG, "-> IR phase %s", inverted ? "inverted" : "normal");
         request_ir_settings(); /* confirms it */
     }
 }
 
-/* A factory IR's microphone / position: the pedal loads that IR; a read confirms what it took. */
+/* A factory IR's microphone / position: the pedal loads that IR; a read confirms what it took. Only while the last
+ * answer describes the IR now shown: its name goes into the frame, and another preset's IR would be loaded here. */
 static void set_cab_mic(uint8_t position, const char *mic)
 {
     if (!s_link_ready || !s_state_valid || !s_state.cab_on || !s_ir_last_valid || !s_ir_last.factory) return;
+    if (s_ir_last_for.preset != s_state.active_preset || s_ir_last_for.slot != ir_slot_now()) {
+        ESP_LOGW(TAG, "IR mic: the last answer is for preset %d slot %d, not this IR; ignored", s_ir_last_for.preset + 1, s_ir_last_for.slot);
+        return;
+    }
     uint8_t frame[128];
     size_t n = nano_build_cab_mic(frame, sizeof(frame), s_ir_last.kind, s_ir_last.ir_name, position, mic);
     if (n && nano_ble_write(frame, n) == 0) {
@@ -688,6 +757,7 @@ static void set_cab_setting(nano_cab_param_t param, float normalized)
 static int s_rename_idx = -1;         /* waiting for the answer for this preset */
 static char s_rename_name[NANO_PRESET_NAME_MAX + 1];
 static int64_t s_rename_sent_us;
+static struct { int idx; bool ok; char msg[48]; } s_rename_result; /* for the screen (UI_RENAME) */
 
 static void rename_answer(bool ok, const char *msg)
 {
@@ -698,11 +768,10 @@ static void rename_answer(bool ok, const char *msg)
         snprintf(s_meta_blob.meta.presets[idx].name, sizeof(s_meta_blob.meta.presets[idx].name), "%s", s_rename_name);
         meta_save();
     }
-    if (lvgl_port_lock(50)) {
-        if (ok) nano_ui_set_preset(s_state_valid ? s_state.active_preset : 0, s_meta_valid ? &s_meta_blob.meta : NULL);
-        nano_ui_rename_result((uint8_t)idx, ok, msg);
-        lvgl_port_unlock();
-    }
+    s_rename_result.idx = idx;
+    s_rename_result.ok = ok;
+    strlcpy(s_rename_result.msg, msg ? msg : "", sizeof(s_rename_result.msg));
+    ui_mark(UI_RENAME | (ok ? UI_PRESET : 0));
 }
 
 static void rename_preset(uint8_t idx, const char *name)
@@ -730,10 +799,7 @@ static void toggle_gate(bool currently_on)
         ESP_LOGI(TAG, "-> gate %s", currently_on ? "off" : "on");
         s_state.gate_on = !currently_on;
         s_gate_written_us = esp_timer_get_time();
-        if (lvgl_port_lock(50)) {
-            nano_ui_set_state(&s_state, s_meta_valid ? &s_meta_blob.meta : NULL);
-            lvgl_port_unlock();
-        }
+        ui_mark(UI_STATE);
         schedule_state(CONFIRM_MS);
     }
 }
@@ -755,7 +821,7 @@ static void step_tempo(int delta)
     s_tempo_dirty = true;
     s_tempo_last_press_us = esp_timer_get_time();
     s_state.tempo_bpm = bpm; /* optimistic; the dump's field 56 confirms */
-    if (lvgl_port_lock(20)) {
+    if (lvgl_port_lock(UI_LOCK_MS)) {
         nano_ui_set_tempo(bpm, false);
         lvgl_port_unlock();
     }
@@ -825,6 +891,43 @@ static void set_tuner(bool on)
     }
 }
 
+/* ---- screen sync (see ui_mark) --------------------------------------------- */
+
+static void ui_sync(void)
+{
+    if (!s_ui_dirty || !lvgl_port_lock(UI_LOCK_MS)) return;
+    uint32_t d = s_ui_dirty;
+    s_ui_dirty = 0;
+    const nano_metadata_t *meta = s_meta_valid ? &s_meta_blob.meta : NULL;
+    uint8_t shown = s_state.active_preset; /* optimistic during a select; 0 before the first state */
+    if ((d & UI_STATE) && s_state_valid) nano_ui_set_state(&s_state, meta);
+    if (d & UI_SYNCED) {
+        nano_ui_set_stale(false);
+        nano_ui_set_connected(true); /* the connect page closes only once the pedal's state is on screen */
+    }
+    if (d & UI_FOOTSWITCHES) nano_ui_set_footswitches(s_state.footswitch);
+    if (d & UI_PRESET) nano_ui_set_preset(shown, meta);
+    if (d & UI_OUTPUTS) nano_ui_set_outputs_muted(s_outputs_muted);
+    if (d & UI_EXP_CLEAR) nano_ui_set_expression_values(NULL);
+    if ((d & UI_EXP_POS) && (s_exp_show || s_exp_pos < 0)) nano_ui_set_expression(s_exp_pos);
+    if (d & UI_EXP_ASSIGN) {
+        /* Tile tracks belong to the shown preset: its assignments, or none while they are unknown. */
+        bool known = s_exp_assign_preset >= 0 && s_exp_assign_preset == shown;
+        nano_ui_set_expression_assignments(known ? &s_exp_assign : NULL);
+    }
+    if ((d & UI_IR) && s_ir_view) nano_ui_set_ir_settings(s_ir_last_valid ? &s_ir_last : NULL, s_ir_last_for.preset, s_ir_last_fresh);
+    if (d & UI_RENAME) nano_ui_rename_result((uint8_t)s_rename_result.idx, s_rename_result.ok, s_rename_result.msg);
+    if (d & UI_TUNER_MUTE) nano_ui_set_tuner_mute(s_tuner_muted);
+    if (d & UI_ROTATION) cyd_display_set_rotation(s_rotate_180); /* flips the panel and the touch map, redraws */
+    if (d & UI_LINK) { /* last: a drop greys out and blanks whatever the pass above showed */
+        nano_ui_set_status(s_link_ready ? "Connected" : s_status_text, s_link_ready);
+        nano_ui_set_stale(!s_link_ready);
+        /* Any drop, deliberate or not, shows the connect page: the main view would claim a state we no longer know. */
+        if (!s_link_ready) nano_ui_set_connected(false);
+    }
+    lvgl_port_unlock();
+}
+
 /* ---- message handling ----------------------------------------------------- */
 
 /* Compare the dump's own preset against its cache record (never a pending target against another preset's names). */
@@ -863,15 +966,9 @@ static void on_state(const nano_state_t *in)
     s_state = *st;
     s_state_valid = true;
     ESP_LOGI(TAG, "<- state: preset %u, capture \"%s\" vol %d (pedal %d), IR \"%s\", %.0f BPM, fw %s", st->active_preset + 1, st->capture_name, st->capture_volume, in->capture_volume, st->ir_short_name, st->tempo_bpm, st->firmware);
-    if (lvgl_port_lock(100)) {
-        nano_ui_set_state(st, s_meta_valid ? &s_meta_blob.meta : NULL);
-        nano_ui_set_stale(false);
-        nano_ui_set_connected(true); /* the connect page closes only once the pedal's state is on screen */
-        lvgl_port_unlock();
-    }
-    exp_push_assignments(st->active_preset);
+    ui_mark(UI_STATE | UI_SYNCED | UI_EXP_ASSIGN);
     /* IR tab open: another preset or IR (or the IR switched on / off) needs its settings read. */
-    if (s_ir_view && (st->active_preset != s_ir_read_preset || (st->cab_on ? st->cab_slot : 0) != s_ir_read_slot)) request_ir_settings();
+    if (s_ir_view && (st->active_preset != s_ir_asked.preset || ir_slot_now() != s_ir_asked.slot)) request_ir_settings();
     bool switching = pending_preset_active() || s_select_inflight || esp_timer_get_time() - s_select_last_us < SELECT_SETTLE_US;
     if (!s_meta_requested_this_link && !switching && cache_contradicts_state(in)) request_metadata();
     else if (!s_settings_read_this_link && !s_settings_due_us) schedule_settings(SETTINGS_READ_DELAY_MS);
@@ -939,12 +1036,7 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         ESP_LOGI(TAG, "<- preset changed: %u", ev.preset + 1);
         s_state.active_preset = ev.preset;
         memcpy(s_state.footswitch, ev.footswitch, 4);
-        if (lvgl_port_lock(50)) {
-            nano_ui_set_footswitches(ev.footswitch);
-            nano_ui_set_preset(ev.preset, s_meta_valid ? &s_meta_blob.meta : NULL);
-            lvgl_port_unlock();
-        }
-        exp_push_assignments(ev.preset);
+        ui_mark(UI_FOOTSWITCHES | UI_PRESET | UI_EXP_ASSIGN);
         s_exp_assign_tries = 0;
         schedule_state(0);
         break;
@@ -963,17 +1055,17 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     case NANO_EV_CONTROL:
         /* Unsaved-changes flag flipped (EXIT on the pedal reverts the edits): the IR settings may be back, and the
          * IR slot with them; the state read below decides which slot to ask about (on_state). */
-        if (ev.msg_type == NANO_MSG_CHANGED && s_ir_view) s_ir_read_slot = -1;
+        if (ev.msg_type == NANO_MSG_CHANGED && s_ir_view) s_ir_asked.slot = -1;
         if (ev.msg_type == NANO_MSG_ENCODER && ev.value >= 0 && s_state_valid) {
             /* Capture / IR scrolled on the pedal: show the cached name now, confirm with a quick dump. */
             const nano_metadata_t *meta = s_meta_valid ? &s_meta_blob.meta : NULL;
             bool shown = false;
             if (ev.selector == 4 && meta && ev.value < NANO_CAPTURE_SLOTS && meta->captures[ev.value][0]) {
-                strncpy(s_state.capture_name, meta->captures[ev.value], sizeof(s_state.capture_name) - 1);
+                strlcpy(s_state.capture_name, meta->captures[ev.value], sizeof(s_state.capture_name));
                 s_state.capture_on = true;
                 shown = true;
             } else if (ev.selector == 3 && meta && ev.value >= 1 && ev.value <= NANO_IR_SLOTS && meta->irs[ev.value - 1][0]) {
-                strncpy(s_state.ir_short_name, meta->irs[ev.value - 1], sizeof(s_state.ir_short_name) - 1);
+                strlcpy(s_state.ir_short_name, meta->irs[ev.value - 1], sizeof(s_state.ir_short_name));
                 s_state.cab_on = true;
                 shown = true;
             } else if (ev.selector == 3 && ev.value == 0) {
@@ -984,10 +1076,7 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
                 shown = true;
             }
             ESP_LOGI(TAG, "<- encoder sel %u val %d%s", (unsigned)ev.selector, (int)ev.value, shown ? " (shown from cache)" : "");
-            if (shown && lvgl_port_lock(50)) {
-                nano_ui_set_state(&s_state, meta);
-                lvgl_port_unlock();
-            }
+            if (shown) ui_mark(UI_STATE);
             schedule_state(ENCODER_DEBOUNCE_MS);
         } else {
             schedule_state(DEBOUNCE_MS);
@@ -996,10 +1085,14 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     case NANO_EV_TUNER_PITCH:
         s_last_pitch_us = esp_timer_get_time();
         s_tuner_cleared = false;
-        /* Readings still streaming right after our tuner-off are not a pedal-started tuner. */
-        if (nano_ui_view() != NANO_VIEW_TUNER && s_last_pitch_us - s_tuner_off_us < TUNER_OFF_GRACE_US) break;
-        if (lvgl_port_lock(20)) {
-            if (nano_ui_view() != NANO_VIEW_TUNER) {
+        if (lvgl_port_lock(20)) { /* ~20 readings a second: a missed one is replaced by the next */
+            bool open = nano_ui_view() == NANO_VIEW_TUNER;
+            /* Readings still streaming right after our tuner-off are not a pedal-started tuner. */
+            if (!open && s_last_pitch_us - s_tuner_off_us < TUNER_OFF_GRACE_US) {
+                lvgl_port_unlock();
+                break;
+            }
+            if (!open) {
                 /* Readings with our view closed: the tuner was started on the pedal. Follow it. */
                 ESP_LOGI(TAG, "<- pitch while the tuner view is closed: opening it (pedal-started tuner)");
                 nano_ui_open_tuner_from_pedal();
@@ -1011,7 +1104,7 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         break;
     case NANO_EV_TUNER_ACK:
         ESP_LOGI(TAG, "<- tuner report: %s, %s, %.1f Hz", ev.tuner_on ? "on" : "off", ev.tuner_muted ? "muted" : "sound on", ev.reference_hz);
-        if (lvgl_port_lock(50)) {
+        if (lvgl_port_lock(VIEW_LOCK_MS)) {
             if (ev.tuner_on) {
                 if (nano_ui_view() != NANO_VIEW_TUNER) {
                     /* A footswitch-started tuner (the pedal answers our own tuner-on within ~65 ms, and sends
@@ -1034,7 +1127,7 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         /* Live tempo while tapping; the first tap opens the tempo view, the pedal's exit closes it.
          * On exit the pedal does not always send a change notice, so re-read. */
         s_state.tempo_bpm = ev.tempo_bpm;
-        if (lvgl_port_lock(20)) {
+        if (lvgl_port_lock(VIEW_LOCK_MS)) {
             if (ev.tap_active && nano_ui_view() != NANO_VIEW_TEMPO) {
                 nano_ui_open_tempo_from_pedal();
                 s_tempo_view_from_pedal = true;
@@ -1051,10 +1144,8 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         break;
     case NANO_EV_SETTINGS:
         ESP_LOGI(TAG, "<- settings: outputs 1/2 %s", ev.outputs_muted ? "muted" : "on");
-        if (lvgl_port_lock(50)) {
-            nano_ui_set_outputs_muted(ev.outputs_muted);
-            lvgl_port_unlock();
-        }
+        s_outputs_muted = ev.outputs_muted;
+        ui_mark(UI_OUTPUTS);
         break;
     case NANO_EV_RENAME_REPLY:
         ESP_LOGI(TAG, "<- rename preset %u: %s", ev.preset + 1, ev.ok ? "ok" : "refused");
@@ -1066,14 +1157,12 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         break;
     case NANO_EV_EXPRESSION:
         s_exp_pos = ev.position;
-        if (s_exp_show && lvgl_port_lock(20)) {
-            nano_ui_set_expression(ev.position);
-            lvgl_port_unlock();
-        }
+        if (s_exp_show) ui_mark(UI_EXP_POS);
         break;
     case NANO_EV_EXP_VALUES:
         /* Paired with every position event; also an empty one after a preset load. */
         if (s_exp_show && lvgl_port_lock(20)) {
+            s_ui_dirty &= ~UI_EXP_CLEAR; /* these are newer */
             nano_ui_set_expression_values(&ev.exp_values);
             lvgl_port_unlock();
         }
@@ -1098,11 +1187,8 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
         bool same = preset == s_exp_assign_preset;
         s_exp_assign = ev.exp_assign;
         s_exp_assign_preset = preset;
-        if (!same && lvgl_port_lock(50)) {
-            nano_ui_set_expression_values(NULL); /* the old preset's values do not belong to these targets */
-            lvgl_port_unlock();
-        }
-        exp_push_assignments(s_state.active_preset);
+        /* The old preset's values do not belong to these targets. */
+        ui_mark(UI_EXP_ASSIGN | (same ? 0 : UI_EXP_CLEAR));
         break;
     }
     default:
@@ -1111,189 +1197,211 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     }
 }
 
+/* Everything that only means something while linked: in-flight work is dropped with the link, so nothing waits for
+ * an answer that can no longer come (and a reconnect starts clean). */
+static void link_lost(void)
+{
+    s_link_ready = false;
+    s_state_due_us = 0;
+    s_settings_due_us = 0;
+    s_req_head = s_req_count = 0;
+    s_pending_preset = -1;
+    s_select_inflight = false;
+    s_tempo_dirty = false;
+    s_tempo_last_press_us = 0;
+    s_tempo_view_from_pedal = false;
+    s_tuner_view_ours = false;
+    s_exp_assign_preset = s_exp_assign_req = -1;
+    s_exp_assign_tries = 0;
+    ir_reads_reset();
+    nano_assembler_reset(&s_asm);
+    if (s_rename_idx >= 0) rename_answer(false, "Connection to the pedal lost");
+    /* Parts of the old link still waiting for the display must not refill the greyed-out screen. */
+    s_ui_dirty &= ~(UI_STATE | UI_SYNCED | UI_PRESET | UI_FOOTSWITCHES | UI_EXP_ASSIGN);
+    s_outputs_muted = false;                /* unknown until the next settings read */
+    exp_reset();
+    ui_mark(UI_OUTPUTS);
+}
+
 static void on_status(nano_ble_status_t status, const char *detail)
 {
     bool ready = status == NANO_BLE_READY;
     if (ready && !s_link_ready) {
         s_link_ready = true;
         ESP_LOGI(TAG, "link ready, free heap %u B (lowest %u B)", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
+        keep_image();
         s_meta_requested_this_link = false;
         s_req_head = s_req_count = 0;
         s_select_inflight = false;
         s_pending_preset = -1;
         s_settings_read_this_link = false;
         s_settings_due_us = 0;
+        ir_reads_reset();
         nano_assembler_reset(&s_asm);
         request_state();
     } else if (!ready && s_link_ready) {
-        s_link_ready = false;
-        s_state_due_us = 0;
-        s_settings_due_us = 0;
-        s_exp_assign_preset = s_exp_assign_req = -1;
-        s_exp_assign_tries = 0;
-        nano_assembler_reset(&s_asm);
-        exp_reset();
-        if (lvgl_port_lock(50)) {
-            nano_ui_set_outputs_muted(false); /* unknown until the next settings read */
-            nano_ui_set_expression_assignments(NULL);
-            lvgl_port_unlock();
-        }
+        link_lost();
     }
     cyd_led(!ready && status != NANO_BLE_CONNECTING, false, status == NANO_BLE_CONNECTING);
-    if (lvgl_port_lock(100)) {
-        char text[48];
-        if (ready) {
-            snprintf(text, sizeof(text), "Connected");
-        } else {
-            strncpy(text, detail, sizeof(text) - 1);
-            text[sizeof(text) - 1] = '\0';
-        }
-        nano_ui_set_status(text, ready);
-        nano_ui_set_stale(!ready);
-        /* Any drop, deliberate or not, shows the connect page: the main view would claim a state we no longer know. */
-        if (!ready) nano_ui_set_connected(false);
+    if (!ready) strlcpy(s_status_text, detail ? detail : "", sizeof(s_status_text));
+    ui_mark(UI_LINK);
+}
+
+static void on_command(const app_msg_t *m)
+{
+    switch (m->kind) {
+    case MSG_STATUS:
+        on_status(m->status, m->text);
+        break;
+    case MSG_PREV:
+        select_preset(-1);
+        break;
+    case MSG_NEXT:
+        select_preset(+1);
+        break;
+    case MSG_SELECT:
+        select_preset_index(m->value);
+        break;
+    case MSG_CAPTURE_VOLUME:
+        set_capture_volume(m->value);
+        break;
+    case MSG_RENAME:
+        rename_preset(m->value, m->text);
+        break;
+    case MSG_IR_VIEW:
+        s_ir_view = m->flag;
+        ESP_LOGI(TAG, "IR tab %s, free heap %u B (lowest %u B)", s_ir_view ? "open" : "closed", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
+        if (s_ir_view) request_ir_settings();
+        break;
+    case MSG_CAB_SETTING:
+        if (m->value < NANO_CAB_PARAMS) set_cab_setting((nano_cab_param_t)m->value, m->number);
+        break;
+    case MSG_CAB_PHASE:
+        set_cab_phase(m->flag);
+        break;
+    case MSG_CAB_MIC:
+        if (m->value < NANO_CAB_POSITIONS) set_cab_mic(m->value, m->text);
+        break;
+    case MSG_TOGGLE_FX:
+        toggle_fx(m->fx_slot, m->fx_on);
+        break;
+    case MSG_TUNER:
+        set_tuner(m->flag);
+        break;
+    case MSG_TOGGLE_GATE:
+        toggle_gate(m->fx_on);
+        break;
+    case MSG_TEMPO_DELTA:
+        step_tempo(m->delta);
+        break;
+    case MSG_TEMPO_VIEW:
+        s_tempo_view_from_pedal = false;
+        set_tap_mode(m->flag);
+        break;
+    case MSG_TUNER_MUTE:
+        s_tuner_muted = m->flag;
+        ui_mark(UI_TUNER_MUTE); /* optimistic; the pedal's report confirms */
+        set_tuner(true);        /* re-send tuner-on with the new flag, as Cortex Cloud does */
+        break;
+    case MSG_LINK:
+        ESP_LOGI(TAG, "link %s", m->flag ? "enabled" : "disabled");
+        nano_ble_set_enabled(m->flag);
+        break;
+    case MSG_LABEL_STYLE:
+        nvs_save_u8(NVS_KEY_LABEL_STYLE, m->value);
+        ui_mark(UI_PRESET);
+        break;
+    case MSG_OUTPUTS_MUTE:
+        set_outputs_mute(m->flag);
+        break;
+    case MSG_EXP_SHOW:
+        s_exp_show = m->flag;
+        nvs_save_u8(NVS_KEY_EXP_SHOW, m->flag);
+        if (m->flag) ui_mark(UI_EXP_POS); /* catch up with what the pedal sent while hidden */
+        break;
+    case MSG_ROTATE:
+        ESP_LOGI(TAG, "display rotation %s", m->flag ? "180" : "0");
+        nvs_save_u8(NVS_KEY_ROTATE, m->flag ? 1 : 0);
+        s_rotate_180 = m->flag;
+        ui_mark(UI_ROTATION);
+        break;
+    case MSG_BRIGHTNESS:
+        cyd_backlight_set_level(m->value); /* instant; the value label already shows it */
+        s_brightness = m->value;
+        s_brightness_save_us = esp_timer_get_time() + BRIGHTNESS_SAVE_DELAY_US;
+        break;
+    case MSG_UPDATE_OPEN:
+        enter_update_mode();
+        break;
+    case MSG_UPDATE_CLOSE:
+        if (s_brightness_save_us) nvs_save_u8(NVS_KEY_BRIGHTNESS, s_brightness);
+        ESP_LOGI(TAG, "update page closed: restarting");
+        esp_restart();
+        break;
+    case MSG_BANK_SIZE:
+        bank_save(m->value);
+        ui_mark(UI_PRESET);
+        break;
+    }
+}
+
+/* Deadlines, polled every loop (one task, no timers to race with). */
+static void app_tick(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (!s_update_mode) nano_assembler_tick(&s_asm, now_ms());
+    ui_sync(); /* parts the display was too busy for */
+    if (s_rename_idx >= 0 && now - s_rename_sent_us > RENAME_TIMEOUT_US) {
+        ESP_LOGW(TAG, "rename: no answer");
+        rename_answer(false, "No answer from the pedal");
+    }
+    tempo_edit_tick();
+    if (s_select_inflight && now - s_select_sent_us > SELECT_ACK_TIMEOUT_US) {
+        ESP_LOGW(TAG, "preset select ack timed out");
+        select_settled();
+    }
+    if (s_link_ready && s_state_due_us && now >= s_state_due_us) request_state();
+    if (s_link_ready && s_settings_due_us && now >= s_settings_due_us) request_settings();
+    exp_assign_tick();
+    if (!s_tuner_cleared && now - s_last_pitch_us > TUNER_SILENCE_US && lvgl_port_lock(UI_LOCK_MS)) {
+        s_tuner_cleared = true;
+        if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_set_tuner(NULL, 0, false);
         lvgl_port_unlock();
     }
+    if (s_brightness_save_us && now >= s_brightness_save_us) {
+        s_brightness_save_us = 0;
+        nvs_save_u8(NVS_KEY_BRIGHTNESS, s_brightness);
+    }
+    if (!s_image_kept && now > MARK_VALID_AFTER_US) keep_image();
 }
 
 static void app_task(void *arg)
 {
     (void)arg;
-    app_msg_t m;
     for (;;) {
-        if (xQueueReceive(s_queue, &m, pdMS_TO_TICKS(20)) == pdTRUE) {
-            switch (m.kind) {
-            case MSG_PACKET:
-                if (!nano_is_tuner_pitch_packet(m.pkt.data, m.pkt.len)) ESP_LOGD(TAG, "<- %u B", m.pkt.len);
-                if (!s_update_mode) nano_assembler_push(&s_asm, m.pkt.data, m.pkt.len, now_ms());
-                break;
-            case MSG_STATUS:
-                on_status(m.status, m.detail);
-                break;
-            case MSG_PREV:
-                select_preset(-1);
-                break;
-            case MSG_NEXT:
-                select_preset(+1);
-                break;
-            case MSG_SELECT:
-                select_preset_index(m.value);
-                break;
-            case MSG_CAPTURE_VOLUME:
-                set_capture_volume(m.value);
-                break;
-            case MSG_RENAME:
-                rename_preset(m.value, m.text);
-                break;
-            case MSG_IR_VIEW:
-                s_ir_view = m.flag;
-                ESP_LOGI(TAG, "IR tab %s, free heap %u B (lowest %u B)", s_ir_view ? "open" : "closed", (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
-                if (s_ir_view) request_ir_settings();
-                break;
-            case MSG_CAB_SETTING:
-                if (m.value < NANO_CAB_PARAMS) set_cab_setting((nano_cab_param_t)m.value, m.number);
-                break;
-            case MSG_CAB_PHASE:
-                set_cab_phase(m.flag);
-                break;
-            case MSG_CAB_MIC:
-                if (m.value < NANO_CAB_POSITIONS) set_cab_mic(m.value, m.text);
-                break;
-            case MSG_TOGGLE_FX:
-                toggle_fx(m.fx_slot, m.fx_on);
-                break;
-            case MSG_TUNER:
-                set_tuner(m.flag);
-                break;
-            case MSG_TOGGLE_GATE:
-                toggle_gate(m.fx_on);
-                break;
-            case MSG_TEMPO_DELTA:
-                step_tempo(m.delta);
-                break;
-            case MSG_TEMPO_VIEW:
-                s_tempo_view_from_pedal = false;
-                set_tap_mode(m.flag);
-                break;
-            case MSG_TUNER_MUTE:
-                s_tuner_muted = m.flag;
-                if (lvgl_port_lock(50)) {
-                    nano_ui_set_tuner_mute(m.flag); /* optimistic; the pedal's report confirms */
-                    lvgl_port_unlock();
-                }
-                set_tuner(true); /* re-send tuner-on with the new flag, as Cortex Cloud does */
-                break;
-            case MSG_LINK:
-                ESP_LOGI(TAG, "link %s", m.flag ? "enabled" : "disabled");
-                nano_ble_set_enabled(m.flag);
-                break;
-            case MSG_LABEL_STYLE:
-                nvs_save_u8(NVS_KEY_LABEL_STYLE, m.value);
-                if (lvgl_port_lock(50)) {
-                    nano_ui_set_preset(s_state_valid ? s_state.active_preset : 0, s_meta_valid ? &s_meta_blob.meta : NULL);
-                    lvgl_port_unlock();
-                }
-                break;
-            case MSG_OUTPUTS_MUTE:
-                set_outputs_mute(m.flag);
-                break;
-            case MSG_EXP_SHOW:
-                s_exp_show = m.flag;
-                nvs_save_u8(NVS_KEY_EXP_SHOW, m.flag);
-                if (m.flag && lvgl_port_lock(50)) {
-                    nano_ui_set_expression(s_exp_pos); /* catch up with what the pedal sent while hidden */
-                    lvgl_port_unlock();
-                }
-                break;
-            case MSG_ROTATE:
-                ESP_LOGI(TAG, "display rotation %s", m.flag ? "180" : "0");
-                nvs_save_u8(NVS_KEY_ROTATE, m.flag ? 1 : 0);
-                if (lvgl_port_lock(100)) {
-                    cyd_display_set_rotation(m.flag); /* flips the panel and the touch map, redraws */
-                    lvgl_port_unlock();
-                }
-                break;
-            case MSG_BRIGHTNESS:
-                cyd_backlight_set_level(m.value); /* instant; the value label already shows it */
-                nvs_save_u8(NVS_KEY_BRIGHTNESS, m.value);
-                break;
-            case MSG_UPDATE_OPEN:
-                enter_update_mode();
-                break;
-            case MSG_UPDATE_CLOSE:
-                ESP_LOGI(TAG, "update page closed: restarting");
-                esp_restart();
-                break;
-            case MSG_BANK_SIZE:
-                bank_save(m.value);
-                if (lvgl_port_lock(50)) {
-                    nano_ui_set_preset(s_state_valid ? s_state.active_preset : 0, s_meta_valid ? &s_meta_blob.meta : NULL);
-                    lvgl_port_unlock();
-                }
-                break;
+        /* The set hands out its queues in arrival order: a status change and the packets after it stay in order. */
+        QueueSetMemberHandle_t q = xQueueSelectFromSet(s_inbox, pdMS_TO_TICKS(LOOP_MS));
+        if (q == s_cmds) {
+            app_msg_t m;
+            if (xQueueReceive(s_cmds, &m, 0) == pdTRUE) on_command(&m);
+        } else if (q == s_packets) {
+            static packet_t pkt; /* app task only */
+            if (xQueueReceive(s_packets, &pkt, 0) == pdTRUE) {
+                if (!nano_is_tuner_pitch_packet(pkt.data, pkt.len)) ESP_LOGD(TAG, "<- %u B", pkt.len);
+                if (!s_update_mode) nano_assembler_push(&s_asm, pkt.data, pkt.len, now_ms());
             }
         }
-        if (!s_update_mode) nano_assembler_tick(&s_asm, now_ms());
-        ir_push_ui();
-        if (s_rename_idx >= 0 && esp_timer_get_time() - s_rename_sent_us > RENAME_TIMEOUT_US) {
-            ESP_LOGW(TAG, "rename: no answer");
-            rename_answer(false, "No answer from the pedal");
-        }
-        tempo_edit_tick();
-        if (s_select_inflight && esp_timer_get_time() - s_select_sent_us > SELECT_ACK_TIMEOUT_US) {
-            ESP_LOGW(TAG, "preset select ack timed out");
-            select_settled();
-        }
-        if (s_link_ready && s_state_due_us && esp_timer_get_time() >= s_state_due_us) request_state();
-        if (s_link_ready && s_settings_due_us && esp_timer_get_time() >= s_settings_due_us) request_settings();
-        exp_assign_tick();
-        if (!s_tuner_cleared && esp_timer_get_time() - s_last_pitch_us > TUNER_SILENCE_US) {
-            s_tuner_cleared = true;
-            if (lvgl_port_lock(20)) {
-                if (nano_ui_view() == NANO_VIEW_TUNER) nano_ui_set_tuner(NULL, 0, false);
-                lvgl_port_unlock();
-            }
-        }
+        app_tick();
+    }
+}
+
+/* Shown on the status line when start-up cannot go on. */
+static void fail_at_start(const char *what)
+{
+    ESP_LOGE(TAG, "%s", what);
+    if (lvgl_port_lock(0)) {
+        nano_ui_set_status(what, false);
+        lvgl_port_unlock();
     }
 }
 
@@ -1306,15 +1414,27 @@ void app_main(void)
     }
     meta_load();
 
+    /* Queues before the screen: its callbacks post to them from the first touch on. */
+    s_packets = xQueueCreate(PACKET_QUEUE_LEN, sizeof(packet_t));
+    s_cmds = xQueueCreate(CMD_QUEUE_LEN, sizeof(app_msg_t));
+    s_inbox = xQueueCreateSet(PACKET_QUEUE_LEN + CMD_QUEUE_LEN);
+    s_asm_buf = malloc(ASSEMBLER_CAP);
+    s_meta_scratch = malloc(sizeof(*s_meta_scratch));
+    bool ready = s_packets && s_cmds && s_inbox && s_asm_buf && s_meta_scratch;
+    if (ready) {
+        xQueueAddToSet(s_packets, s_inbox);
+        xQueueAddToSet(s_cmds, s_inbox);
+    }
+
     lv_display_t *disp = cyd_board_init();
     if (!disp) {
         ESP_LOGE(TAG, "display init failed");
         return;
     }
     /* Display settings before the first frame: the backlight is still off. */
-    bool rot180 = rotate_load();
-    uint8_t brightness = brightness_load();
-    cyd_backlight_set_level(brightness);
+    s_rotate_180 = rotate_load();
+    s_brightness = brightness_load();
+    cyd_backlight_set_level(s_brightness);
     nano_ui_callbacks_t ui_cb = {
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_capture_volume = ui_on_capture_volume, .on_ir_view = ui_on_ir_view, .on_cab_setting = ui_on_cab_setting, .on_cab_phase = ui_on_cab_phase, .on_cab_mic = ui_on_cab_mic, .on_rename_preset = ui_on_rename, .on_toggle_fx = ui_on_toggle_fx,
         .on_tuner = ui_on_tuner, .on_link = ui_on_link, .on_bank_size = ui_on_bank_size,
@@ -1325,18 +1445,18 @@ void app_main(void)
         .on_wifi_join = ui_on_wifi_join, .on_update_check = ui_on_update_check, .on_update_install = ui_on_update_install,
     };
     if (lvgl_port_lock(0)) {
-        cyd_display_set_rotation(rot180); /* under the lock: the LVGL task already owns the panel bus */
+        cyd_display_set_rotation(s_rotate_180); /* under the lock: the LVGL task already owns the panel bus */
         nano_ui_create(disp, &ui_cb);
         nano_ui_set_bank_size(bank_load());
         nano_ui_set_label_style(label_style_load());
         s_exp_show = exp_show_load();
         nano_ui_set_expression_show(s_exp_show);
-        nano_ui_set_rotation(rot180);
-        nano_ui_set_brightness(brightness);
+        nano_ui_set_rotation(s_rotate_180);
+        nano_ui_set_brightness(s_brightness);
         nano_ui_set_firmware_version(nano_ota_running_version());
         char ssid[33];
         nano_ui_update_set_wifi(nano_ota_saved_ssid(ssid, sizeof(ssid)) ? ssid : NULL);
-        nano_ui_set_status("Starting Bluetooth", false);
+        nano_ui_set_status(s_status_text, false);
         nano_ui_set_stale(true);
         nano_ui_set_connected(false);
         lvgl_port_unlock();
@@ -1344,24 +1464,18 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(60)); /* let the first frame flush before lighting the panel */
     cyd_backlight(true);
 
-    s_queue = xQueueCreate(PACKET_QUEUE_LEN, sizeof(app_msg_t));
-    s_asm_buf = malloc(ASSEMBLER_CAP);
-    s_meta_scratch = malloc(sizeof(*s_meta_scratch));
-    if (!s_queue || !s_asm_buf || !s_meta_scratch || nano_ota_init() != 0) {
-        ESP_LOGE(TAG, "out of memory at start");
+    if (!ready || nano_ota_init() != 0) {
+        fail_at_start("Out of memory at start");
         return;
     }
     nano_assembler_init(&s_asm, s_asm_buf, ASSEMBLER_CAP, on_message, NULL);
-    xTaskCreatePinnedToCore(app_task, "nanogig_app", 8192, NULL, 5, NULL, 1);
+    if (xTaskCreatePinnedToCore(app_task, "nanogig_app", 8192, NULL, 5, NULL, 1) != pdPASS) {
+        fail_at_start("App task failed to start");
+        return;
+    }
 
     nano_ble_callbacks_t ble_cb = { .on_status = ble_on_status, .on_notify = ble_on_notify };
-    if (nano_ble_start(&ble_cb) != 0) {
-        if (lvgl_port_lock(100)) {
-            nano_ui_set_status("Bluetooth failed to start", false);
-            lvgl_port_unlock();
-        }
-    }
-    /* Display, touch and Bluetooth came up: a freshly installed image is good (else the bootloader rolls back). */
-    nano_ota_mark_valid();
+    if (nano_ble_start(&ble_cb) != 0) fail_at_start("Bluetooth failed to start");
+    /* The image is kept once it links to the pedal or has run a minute (keep_image). */
     ESP_LOGI(TAG, "firmware %s, free heap %u B", nano_ota_running_version(), (unsigned)esp_get_free_heap_size());
 }

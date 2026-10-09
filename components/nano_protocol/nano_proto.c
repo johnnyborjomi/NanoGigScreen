@@ -116,7 +116,8 @@ int64_t nano_first_varint(const uint8_t *data, size_t len, uint32_t field, int64
     nano_field_t f;
     nano_proto_iter_init(&it, data, len);
     while (nano_proto_next(&it, &f)) {
-        if (f.field == field && f.wire == NANO_WIRE_VARINT) return (int64_t)f.value;
+        /* Above INT64_MAX is garbage (and would read as negative, slipping past `< COUNT` checks): treat as absent. */
+        if (f.field == field && f.wire == NANO_WIRE_VARINT) return f.value > (uint64_t)INT64_MAX ? dflt : (int64_t)f.value;
     }
     return dflt;
 }
