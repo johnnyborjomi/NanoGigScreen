@@ -132,10 +132,10 @@ cmake -B build && cmake --build build && ./build/test_protocol
 
 ### CI
 
-`.github/workflows/ci.yml` runs on every push and pull request: the protocol tests and the
-preview under AddressSanitizer + UndefinedBehaviorSanitizer, the firmware build in
-`espressif/idf:v5.3.2`, and a size limit (the image must stay under 92% of an OTA slot). The
-rendered preview PNGs are kept as a build artifact.
+`.github/workflows/ci.yml`: every push runs the protocol tests and the preview (LVGL cloned at
+the tag `dependencies.lock` pins) under AddressSanitizer + UndefinedBehaviorSanitizer and keeps the
+rendered PNGs as a build artifact. Pull requests also build the firmware from a clean checkout in
+`espressif/idf:v5.3.2` and fail it above 92% of an OTA slot.
 
 ## Firmware updates over Wi-Fi
 

@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 project(nanogig_preview C)
 set(CMAKE_C_STANDARD 11)
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-set(LVGL ${ROOT}/managed_components/lvgl__lvgl)
+set(LVGL ${ROOT}/managed_components/lvgl__lvgl CACHE PATH "LVGL sources: the firmware build fetches them; CI clones the locked tag")
 
 file(GLOB_RECURSE LVGL_SRC ${LVGL}/src/*.c)
 list(FILTER LVGL_SRC EXCLUDE REGEX "/src/drivers/")
