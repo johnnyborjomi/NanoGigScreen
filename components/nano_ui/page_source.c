@@ -30,7 +30,7 @@ static struct {
 } w = { .tab = -1 };
 
 static void on_close(lv_event_t *e) { (void)e; ui_go_base(); }
-static void on_tab(lv_event_t *e) { ui_go(lv_event_get_target_obj(e) == w.tabs[1] ? NANO_VIEW_IR : NANO_VIEW_CAPTURE); }
+static void on_tab(lv_event_t *e) { ui_go(lv_event_get_user_data(e) ? NANO_VIEW_IR : NANO_VIEW_CAPTURE); }
 
 /* ---- capture tab ------------------------------------------------------------------- */
 
@@ -91,12 +91,7 @@ static void build_capture_tab(lv_obj_t *page)
 /* The tap comes from the header, so the old content can go at once. */
 static void select_tab(int tab)
 {
-    for (int i = 0; i < 2; i++) {
-        bool on = i == tab;
-        lv_obj_set_style_bg_opa(w.tabs[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(w.tabs[i], on ? 2 : 0, 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(w.tabs[i], 0), lv_color_hex(on ? C_TEXT : C_MUTED), 0);
-    }
+    ui_header_tabs_select(w.tabs, tab);
     if (w.tab == tab) return;
     lv_obj_clean(w.content);
     w.cap_volume = NULL; /* freed with the content */
@@ -109,17 +104,8 @@ static void select_tab(int tab)
 static lv_obj_t *build(lv_obj_t *scr)
 {
     ui_overlay_t o = ui_overlay(scr, "", on_close, on_close);
-    /* Tabs between "<" and "x". */
     static const char *const NAMES[2] = { "Capture", "IR" };
-    const int32_t x0 = 48, tab_w = (SCREEN_W - 2 * x0 - 6) / 2;
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *t = ui_button(o.root, x0 + i * (tab_w + 6), 1, tab_w, TOP_H + 2, NAMES[i], &lv_font_montserrat_14, C_PANEL_2, C_TEXT, on_tab, NULL);
-        lv_obj_set_style_radius(t, 6, 0);
-        lv_obj_set_style_border_side(t, LV_BORDER_SIDE_BOTTOM, 0);
-        lv_obj_set_style_border_color(t, lv_color_hex(C_ACCENT), 0);
-        lv_obj_set_ext_click_area(t, 4);
-        w.tabs[i] = t;
-    }
+    ui_header_tabs(o.root, NAMES, on_tab, w.tabs);
     /* Below the header, so the header stays tappable. */
     w.content = ui_box(o.root, 0, SOURCE_TOP, SCREEN_W, SCREEN_H - SOURCE_TOP, C_BG);
     w.tab = -1;

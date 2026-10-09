@@ -4,6 +4,7 @@
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
 #include "expression.h"
+#include "ir_library.h"
 #include "link.h"
 #include "nano_ble.h"
 #include "nano_ui.h"
@@ -47,7 +48,7 @@ static void state_ui_push(uint32_t d)
 
 /* In this order; the link's part goes last: a drop greys out and blanks whatever the others showed. */
 static void (*const PUSHERS[])(uint32_t parts) = {
-    state_ui_push, expression_ui_push, remote_pages_ui_push, rename_ui_push, tuner_ui_push, settings_ui_push, link_ui_push,
+    state_ui_push, expression_ui_push, remote_pages_ui_push, ir_library_ui_push, rename_ui_push, tuner_ui_push, settings_ui_push, link_ui_push,
 };
 
 void ui_mark(uint32_t parts)

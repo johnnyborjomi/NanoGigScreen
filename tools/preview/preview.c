@@ -82,6 +82,7 @@ static void noop_i(int v) { (void)v; }
 static void noop_rename(uint8_t i, const char *n) { (void)i; (void)n; }
 static void noop_cab(uint8_t p, float n) { (void)p; (void)n; }
 static void noop_mic(uint8_t p, const char *m) { (void)p; (void)m; }
+static void noop_pick(uint8_t list, uint16_t index, const char *name) { (void)list, (void)index, (void)name; }
 
 int main(int argc, char **argv)
 {
@@ -95,7 +96,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_mic = noop_mic };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_on = noop_b, .on_cab_step = noop_i, .on_ir_library = noop_b, .on_ir_pick = noop_pick, .on_cab_mic = noop_mic };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -308,6 +309,13 @@ int main(int argc, char **argv)
         nano_ui_set_ir_settings(&ir, lng.active_preset, true);
         render(200);
         save(dir, "9o-ir-level");
+        /* The preset's saved IR shows in teal; one picked with < > in white. */
+        strcpy(meta.presets[lng.active_preset].ir_short_name, lng.ir_short_name);
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9o2-ir-saved");
+        meta.presets[lng.active_preset].ir_short_name[0] = '\0';
+        nano_ui_set_state(&lng, &meta);
         nano_ui_ir_page(1);
         render(200);
         save(dir, "9p-ir-high-pass");
@@ -321,6 +329,9 @@ int main(int argc, char **argv)
         nano_ui_set_state(&lng, &meta);
         render(200);
         save(dir, "9r-ir-off");
+        nano_ui_ir_page(0);
+        render(200);
+        save(dir, "9r2-ir-off-level");
         /* Tab switches rebuild the content: back and forth twice. */
         for (int i = 0; i < 2; i++) {
             nano_ui_show(NANO_VIEW_CAPTURE);
@@ -345,6 +356,39 @@ int main(int argc, char **argv)
         nano_ui_set_ir_settings(&ir, lng.active_preset, true);
         render(50);
         save(dir, "9u-ir-lp-reverted");
+        /* IR list: reading, then the user IRs (the current one outlined, the saved one teal) and the factory ones. */
+        strcpy(lng.ir_short_name, "Tay816 M251 Pz1");
+        strcpy(meta.presets[lng.active_preset].ir_short_name, "YA MES 412 TRAD Mix 10");
+        nano_ui_set_state(&lng, &meta);
+        nano_ui_show(NANO_VIEW_IR_LIST);
+        render(50);
+        save(dir, "9v-ir-list-reading");
+        {
+            static const char *const factory[] = { "110 US PRN C10R", "112 UK C15 Blue", "115 Amped Modern", "212 Match D30 Sig A", "412 CA Stand OS A V30 '01" };
+            static const char *const user[] = { "Dread-35 SR25 Pz1", "Dread-35 SR25 SB3 (Blend)", "Holy Grail C800 Pz1", "LT TV Mix 7", "Tay816 M251 EXP1",
+                                                "Tay816 M251 Pz1", "Tay816 M251 SB3 (Blend)", "YA MES 412 TRAD Mix 10", "YA MRSH 412 MV30 BLND Mix 13" };
+            size_t size = 0;
+            for (size_t i = 0; i < 5; i++) size += strlen(factory[i]) + 1;
+            for (size_t i = 0; i < 9; i++) size += strlen(user[i]) + 1;
+            nano_ir_library_t *lib = malloc(sizeof(*lib) + size);
+            lib->count[NANO_IR_FACTORY] = 5;
+            lib->count[NANO_IR_USER] = 9;
+            lib->size = (uint16_t)size;
+            char *p = lib->names;
+            for (size_t i = 0; i < 5; i++) p = stpcpy(p, factory[i]) + 1;
+            for (size_t i = 0; i < 9; i++) p = stpcpy(p, user[i]) + 1;
+            nano_ui_set_ir_library(lib);
+        }
+        render(50);
+        save(dir, "9w-ir-list-user");
+        lv_obj_t *next_page = nano_ui_find(LV_SYMBOL_DOWN);
+        if (next_page) lv_obj_send_event(next_page, LV_EVENT_CLICKED, NULL);
+        render(50);
+        save(dir, "9w2-ir-list-user-2");
+        lv_obj_t *factory_tab = nano_ui_find("Factory");
+        if (factory_tab) lv_obj_send_event(factory_tab, LV_EVENT_CLICKED, NULL);
+        render(50);
+        save(dir, "9x-ir-list-factory");
         nano_ui_show(NANO_VIEW_MAIN);
         /* Rename page (long press on the name): 20 characters, then the pedal's refusal. */
         nano_ui_open_rename(0);

@@ -236,6 +236,47 @@ bool nano_decode_cab_settings(const uint8_t *d, size_t len, nano_cab_settings_t 
     return ir;
 }
 
+/* ---- IR library ---------------------------------------------------------- */
+
+size_t nano_decode_ir_library(const uint8_t *d, size_t len, nano_ir_library_t *out, size_t cap)
+{
+    static const uint32_t FIELDS[2] = { 4, 6 }; /* NANO_IR_FACTORY, NANO_IR_USER */
+    uint32_t count[2] = { 0 }, size = 0;
+    /* One pass per list: the factory names first whatever the order on the wire. */
+    for (int list = 0; list < 2; list++) {
+        nano_proto_iter_t it;
+        nano_field_t f;
+        nano_proto_iter_init(&it, d, len);
+        while (nano_proto_next(&it, &f)) {
+            if (f.wire != NANO_WIRE_BYTES || f.field != FIELDS[list]) continue;
+            size_t at = sizeof(*out) + size;
+            if (out && at + f.len + 1 <= cap) {
+                memcpy(out->names + size, f.raw, f.len);
+                out->names[size + f.len] = '\0';
+            }
+            size += (uint32_t)f.len + 1;
+            count[list]++;
+        }
+    }
+    if (count[0] + count[1] == 0 || size > UINT16_MAX || count[0] > UINT16_MAX || count[1] > UINT16_MAX) return 0;
+    size_t need = sizeof(*out) + size;
+    if (out && need <= cap) {
+        out->count[0] = (uint16_t)count[0];
+        out->count[1] = (uint16_t)count[1];
+        out->size = (uint16_t)size;
+    }
+    return need;
+}
+
+const char *nano_ir_library_name(const nano_ir_library_t *lib, int list, int index)
+{
+    if (!lib || list < 0 || list > 1 || index < 0 || index >= lib->count[list]) return NULL;
+    int skip = (list == NANO_IR_USER ? lib->count[0] : 0) + index;
+    const char *p = lib->names;
+    while (skip-- > 0) p += strlen(p) + 1;
+    return p;
+}
+
 /* ---- events ------------------------------------------------------------ */
 
 void nano_decode_event(const uint8_t *pkt, size_t len, nano_event_t *out)

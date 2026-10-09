@@ -22,6 +22,11 @@ ui_overlay_t ui_overlay(lv_obj_t *scr, const char *title, lv_event_cb_t back_cb,
 /* Show or hide "<"; the title moves next to it or to the edge. */
 void ui_overlay_set_back(const ui_overlay_t *o, bool shown);
 
+/* Two tabs in an overlay's title bar, between "<" and "x" (Capture / IR, User / Factory); `cb` gets the tab's index
+ * as user data. */
+void ui_header_tabs(lv_obj_t *root, const char *const names[2], lv_event_cb_t cb, lv_obj_t *out[2]);
+void ui_header_tabs_select(lv_obj_t *const tabs[2], int selected);
+
 /* ---- pager: a left column with up / down buttons and "Page" over "n/m" between them ----
  * Pages are either child boxes shown one at a time (ui_pager_add_page) or virtual: a count and an on_show
  * callback that refills one box (ui_pager_set_count: the presets list, the IR tab). */

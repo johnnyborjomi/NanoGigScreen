@@ -33,6 +33,7 @@ static ui_page_t *const PAGES[] = {
     [NANO_VIEW_CAPTURE] = &page_source,
     [NANO_VIEW_IR] = &page_source,
     [NANO_VIEW_RENAME] = &page_rename,
+    [NANO_VIEW_IR_LIST] = &page_ir_list,
 };
 
 /* ---- page switching ---------------------------------------------------------------- */

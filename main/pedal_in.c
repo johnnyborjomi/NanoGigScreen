@@ -8,6 +8,7 @@
 #include "block_edits.h"
 #include "esp_log.h"
 #include "expression.h"
+#include "ir_library.h"
 #include "link.h"
 #include "nano_assembler.h"
 #include "nano_proto.h"
@@ -174,7 +175,7 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     (void)ctx;
     int msg_type;
     size_t plen = nano_split_trailer(body, len, &msg_type);
-    if (remote_pages_on_reply(msg_type, body, plen)) return;
+    if (remote_pages_on_reply(msg_type, body, plen) || ir_library_on_reply(msg_type, body, plen)) return;
     if (packets > 1 || msg_type == NANO_MSG_DUMP) {
         if (!complete) ESP_LOGW(TAG, "unterminated %u-byte message flushed by timeout", (unsigned)len);
         /* Only a reply to our own metadata request can be metadata; the decoder also checks size / records. */

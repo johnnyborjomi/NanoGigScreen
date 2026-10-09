@@ -427,6 +427,31 @@ static void test_labels_and_models(void)
             }
         }
         CHECK(nano_cab_normalized(NANO_CAB_LEVEL, -200) == 0 && nano_cab_normalized(NANO_CAB_LOW_PASS, 30000) == 1);
+        /* Library request, byte-exact against Cortex Cloud (snoop 2026-10-09); the IR names only. */
+        const uint8_t lib_req[] = { 0x0C, 0xC0, 0x18, 0x01, 0x20, 0x01, 0x28, 0x01, 0x30, 0x01, 0x4C, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_library_request(f, sizeof(f), false) == sizeof(lib_req) && memcmp(f, lib_req, sizeof(lib_req)) == 0);
+        const uint8_t lib_irs[] = { 0x08, 0xC0, 0x20, 0x01, 0x30, 0x01, 0x4C, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_library_request(f, sizeof(f), true) == sizeof(lib_irs) && memcmp(f, lib_irs, sizeof(lib_irs)) == 0);
+        /* Library reply: a capture record, user and factory IR names out of order; factory first after decoding. */
+        const uint8_t lib[] = { 0x1A, 0x03, 0x12, 0x01, 'C', 0x32, 0x02, 'U', '0', 0x22, 0x02, 'F', '0', 0x32, 0x02, 'U', '1', 0x22, 0x00 };
+        size_t need = nano_decode_ir_library(lib, sizeof(lib), NULL, 0);
+        CHECK(need == sizeof(nano_ir_library_t) + 3 + 1 + 3 + 3);
+        uint8_t lib_buf[64] __attribute__((aligned(4)));
+        nano_ir_library_t *irs = (nano_ir_library_t *)lib_buf;
+        CHECK(nano_decode_ir_library(lib, sizeof(lib), irs, sizeof(lib_buf)) == need);
+        CHECK(irs->count[NANO_IR_FACTORY] == 2 && irs->count[NANO_IR_USER] == 2);
+        CHECK(strcmp(nano_ir_library_name(irs, NANO_IR_FACTORY, 0), "F0") == 0 && strcmp(nano_ir_library_name(irs, NANO_IR_FACTORY, 1), "") == 0);
+        CHECK(strcmp(nano_ir_library_name(irs, NANO_IR_USER, 1), "U1") == 0 && nano_ir_library_name(irs, NANO_IR_USER, 2) == NULL);
+        CHECK(nano_decode_ir_library(lib, 5, NULL, 0) == 0); /* the capture alone */
+        /* Loading an IR: the factory one as the microphone frame's IR part, the user one in field 4. */
+        const uint8_t load_f[] = { 0x0B, 0xC0, 0x1A, 0x05, 0x08, 0x06, 0x12, 0x01, 'A', 0x5E, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_cab_load(f, sizeof(f), NANO_IR_FACTORY, 6, "A") == sizeof(load_f) && memcmp(f, load_f, sizeof(load_f)) == 0);
+        CHECK(nano_build_cab_load(f, sizeof(f), NANO_IR_USER, 7, "A") == sizeof(load_f) && f[2] == 0x22 && f[5] == 7);
+        CHECK(nano_build_cab_load(f, sizeof(f), NANO_IR_USER, 7, "") == 0);
+        /* IR select (DrD85's SelectorValue): slot 2, and 0 = off. */
+        const uint8_t sel[] = { 0x08, 0xC0, 0x18, 0x03, 0x20, 0x02, 0x1C, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_cab_select(f, sizeof(f), 2) == 10 && memcmp(f, sel, 10) == 0);
+        CHECK(nano_build_cab_select(f, sizeof(f), 0) == 10 && f[5] == 0);
         /* Phase and microphone / position, byte-exact against Cortex Cloud (snoop 2026-10-09). */
         const uint8_t ph_on[] = { 0x06, 0xC0, 0x40, 0x01, 0x5E, 0x00, 0x00, 0x00 };
         CHECK(nano_build_cab_phase(f, sizeof(f), true) == 8 && memcmp(f, ph_on, 8) == 0);
