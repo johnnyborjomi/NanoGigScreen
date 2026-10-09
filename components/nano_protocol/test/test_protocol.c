@@ -126,7 +126,7 @@ static void test_state_single(void)
     CHECK(s.active_preset == 14);
     CHECK(s.has_bypass);
     CHECK(s.fx_on[0] && !s.fx_on[1] && s.fx_on[2] && s.fx_on[3] && s.fx_on[4]);
-    CHECK(s.cab_on);
+    CHECK(s.cab_on && s.cab_slot == 6);
     CHECK(s.gate_on);
     CHECK(s.capture_on);
     CHECK(s.amp[0] == 154);
@@ -226,7 +226,7 @@ static void test_state_preset_one_and_bypassed_capture(void)
     CHECK(nano_decode_state(pkt + 2, n - 2, &s));
     CHECK(s.active_preset == 33);
     CHECK(!s.capture_on);
-    CHECK(!s.cab_on);
+    CHECK(!s.cab_on && s.cab_slot == 0);
     CHECK_STR(s.capture_name, "US Prince 65 4");
 }
 
@@ -390,6 +390,75 @@ static void test_labels_and_models(void)
         const uint8_t no[] = { 0x08, 0xC0, 0x08, 0x06, 0x18, 0x2C, 0x70, 0x00, 0x00, 0x00 };
         nano_decode_event(no, sizeof(no), &ev);
         CHECK(ev.kind == NANO_EV_RENAME_REPLY && ev.preset == 44 && !ev.ok);
+    }
+
+    printf("IR settings\n");
+    {
+        /* Byte-exact against the frames the pedal took (probe 2026-10-08). */
+        const uint8_t req[] = { 0x08, 0xC0, 0x18, 0x00, 0x20, 0x00, 0x5F, 0x00, 0x00, 0x00 };
+        const uint8_t lvl[] = { 0x09, 0xC0, 0x2D, 0xC3, 0xAF, 0x17, 0x3F, 0x5E, 0x00, 0x00, 0x00 };
+        uint8_t f[16];
+        CHECK(nano_build_cab_settings_request(f, sizeof(f), 1) == 10 && memcmp(f, req, 10) == 0);
+        CHECK(nano_build_cab_settings_request(f, sizeof(f), 5) == 10 && f[5] == 4);
+        CHECK(nano_build_cab_settings_request(f, sizeof(f), 6) == 10 && f[5] == 5 && nano_build_cab_settings_request(f, sizeof(f), 0) == 0);
+        float n;
+        memcpy(&n, lvl + 3, 4);
+        CHECK(nano_build_cab_setting(f, sizeof(f), NANO_CAB_LEVEL, n) == 11 && memcmp(f, lvl, 11) == 0);
+        CHECK(nano_build_cab_setting(f, sizeof(f), NANO_CAB_HIGH_PASS, 0.5f) == 11 && f[2] == 0x35);
+        CHECK(nano_build_cab_setting(f, sizeof(f), NANO_CAB_LOW_PASS, 2.0f) == 11 && f[2] == 0x3D && memcmp(f + 3, "\x00\x00\x80\x3F", 4) == 0);
+        CHECK(nano_build_cab_setting(f, 10, NANO_CAB_LEVEL, 0.5f) == 0);
+        /* Scales against Cortex Cloud's readouts (2026-10-08/09). */
+        CHECK(fabsf(nano_cab_value(NANO_CAB_LEVEL, 0.66212219f)) < 0.005f); /* DrD85's 0 dB */
+        CHECK(nano_cab_value(NANO_CAB_LEVEL, 0) == -96 && fabsf(nano_cab_value(NANO_CAB_LEVEL, 1) - 12) < 0.001f);
+        CHECK(fabsf(nano_cab_value(NANO_CAB_LEVEL, 0.654951f) + 0.3f) < 0.01f);  /* -0.3 dB */
+        CHECK(fabsf(nano_cab_value(NANO_CAB_LEVEL, n) + 3.0f) < 0.01f);          /* -3.0 dB */
+        CHECK(fabsf(nano_cab_value(NANO_CAB_LEVEL, 0.29376f) + 20) < 0.2f);      /* stops near -20, -6, +6 */
+        CHECK(fabsf(nano_cab_value(NANO_CAB_LEVEL, 0.52908f) + 6) < 0.1f && fabsf(nano_cab_value(NANO_CAB_LEVEL, 0.81774f) - 6) < 0.1f);
+        CHECK(fabsf(nano_cab_value(NANO_CAB_HIGH_PASS, 0.220842f) - 83) < 0.5f);
+        CHECK(fabsf(nano_cab_value(NANO_CAB_HIGH_PASS, 0.1036f) - 38) < 0.5f);
+        CHECK(fabsf(nano_cab_value(NANO_CAB_LOW_PASS, 0.59537f) - 9006) < 1.0f);
+        CHECK(fabsf(nano_cab_value(NANO_CAB_LOW_PASS, 0.5652f) - 8342) < 2.0f);
+        CHECK(nano_cab_value(NANO_CAB_HIGH_PASS, 0) == 20 && nano_cab_value(NANO_CAB_HIGH_PASS, 1) == 800);
+        CHECK(nano_cab_value(NANO_CAB_LOW_PASS, 0) == 1000 && nano_cab_value(NANO_CAB_LOW_PASS, 1) == 20000);
+        const float probe[] = { 0.001f, 0.2f, 0.5f, 0.66212219f, 0.8f, 0.999f };
+        for (size_t i = 0; i < sizeof(probe) / sizeof(probe[0]); i++) {
+            for (int p = 0; p < NANO_CAB_PARAMS; p++) {
+                CHECK(fabsf(nano_cab_normalized((nano_cab_param_t)p, nano_cab_value((nano_cab_param_t)p, probe[i])) - probe[i]) < 1e-4f);
+            }
+        }
+        CHECK(nano_cab_normalized(NANO_CAB_LEVEL, -200) == 0 && nano_cab_normalized(NANO_CAB_LOW_PASS, 30000) == 1);
+        /* Phase and microphone / position, byte-exact against Cortex Cloud (snoop 2026-10-09). */
+        const uint8_t ph_on[] = { 0x06, 0xC0, 0x40, 0x01, 0x5E, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_cab_phase(f, sizeof(f), true) == 8 && memcmp(f, ph_on, 8) == 0);
+        CHECK(nano_build_cab_phase(f, sizeof(f), false) == 8 && f[3] == 0);
+        const uint8_t mic[] = { 0x34, 0xC0, 0x1A, 0x2E, 0x08, 0x06, 0x12, 0x19, '4', '1', '2', ' ', 'C', 'A', ' ', 'S', 't', 'a', 'n', 'd',
+                                ' ', 'O', 'S', ' ', 'A', ' ', 'V', '3', '0', ' ', '\'', '0', '1', 0x18, 0x00, 0x22, 0x0D, 'C', 'o', 'n',
+                                'd', 'e', 'n', 's', 'e', 'r', ' ', '1', '8', '4', 0x5E, 0x00, 0x00, 0x00 };
+        uint8_t big[96];
+        CHECK(nano_build_cab_mic(big, sizeof(big), 6, "412 CA Stand OS A V30 '01", 0, "Condenser 184") == sizeof(mic) && memcmp(big, mic, sizeof(mic)) == 0);
+        CHECK(nano_build_cab_mic(big, 40, 6, "412 CA Stand OS A V30 '01", 0, "Condenser 184") == 0);
+        CHECK(nano_build_cab_mic(big, sizeof(big), 6, "", 0, "Condenser 184") == 0);
+        /* The reply for a factory IR (snoop 2026-10-09, preset 7). */
+        const uint8_t reply[] = {
+            0x08, 0x06, 0x18, 0x01, 0x2A, 0x49, 0x08, 0x06, 0x12, 0x19, '4', '1', '2', ' ', 'C', 'A', ' ', 'S', 't', 'a', 'n', 'd', ' ', 'O', 'S', ' ',
+            'A', ' ', 'V', '3', '0', ' ', '\'', '0', '1', 0x18, 0x01, 0x22, 0x0D, 'C', 'o', 'n', 'd', 'e', 'n', 's', 'e', 'r', ' ', '1', '8', '4',
+            0x2A, 0x19, '4', '1', '2', ' ', 'C', 'A', ' ', 'S', 't', 'a', 'n', 'd', ' ', 'O', 'S', ' ', 'A', ' ', 'V', '3', '0', ' ', '\'', '0', '1',
+            0x3A, 0x0D, 'C', 'o', 'n', 'd', 'e', 'n', 's', 'e', 'r', ' ', '1', '8', '4',
+            0x3A, 0x0A, 'R', 'i', 'b', 'b', 'o', 'n', ' ', '1', '6', '0',
+            0x42, 0x0F, 0x0D, 0xC3, 0xAF, 0x17, 0x3F, 0x1D, 0x00, 0x00, 0x00, 0x3F, 0x15, 0x00, 0x00, 0x80, 0x3E };
+        nano_cab_settings_t cs;
+        CHECK(nano_decode_cab_settings(reply, sizeof(reply), &cs));
+        CHECK(cs.factory && cs.kind == 6 && strcmp(cs.ir_name, "412 CA Stand OS A V30 '01") == 0 && cs.position == 1);
+        CHECK(strcmp(cs.mic, "Condenser 184") == 0 && cs.mic_count == 2 && strcmp(cs.mics[1], "Ribbon 160") == 0);
+        CHECK(cs.values[0] == n && cs.values[1] == 0.25f && cs.values[2] == 0.5f && !cs.phase_inverted);
+        /* A user IR (2026-10-08): field 6, no microphones. */
+        const uint8_t user[] = { 0x08, 0x06, 0x18, 0x01, 0x32, 0x07, 0x08, 0x24, 0x12, 0x03, 'Y', 'A', ' ', 0x42, 0x05, 0x0D, 0xC3, 0xAF, 0x17, 0x3F };
+        CHECK(nano_decode_cab_settings(user, sizeof(user), &cs) && !cs.factory && cs.kind == 36 && cs.mic_count == 0 && cs.values[0] == n);
+        /* Phase inverted: field 8 gains `20 01` (2026-10-09). */
+        const uint8_t inv[] = { 0x08, 0x06, 0x18, 0x01, 0x32, 0x07, 0x08, 0x24, 0x12, 0x03, 'Y', 'A', ' ', 0x42, 0x07, 0x0D, 0xC3, 0xAF, 0x17, 0x3F, 0x20, 0x01 };
+        CHECK(nano_decode_cab_settings(inv, sizeof(inv), &cs) && cs.phase_inverted && cs.values[0] == n);
+        const uint8_t none[] = { 0x08, 0x02, 0x42, 0x02, 0x08, 0x01 };
+        CHECK(!nano_decode_cab_settings(none, sizeof(none), &cs));
     }
 
     printf("capture volume\n");

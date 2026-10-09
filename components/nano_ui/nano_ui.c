@@ -44,7 +44,9 @@ static const uint32_t SLOT_COLORS[8] = { 0xFF5C5C, 0xFFB454, 0x4CF06A, 0x00F0D8,
 static nano_ui_callbacks_t s_cb;
 static lv_obj_t *s_scr;
 static lv_obj_t *s_main, *s_menu, *s_settings, *s_tuner, *s_tempo_view, *s_connect;
-static lv_obj_t *s_capture_view; /* built on open, freed on close, like the presets list */
+static lv_obj_t *s_capture_view; /* Capture / IR tabs: built on open, freed on close, like the presets list */
+static lv_obj_t *s_tab_btn[2], *s_tab_page; /* header tabs, and the content of the one showing (rebuilt on a switch) */
+static int s_tab_built = -1;                 /* 0 = capture, 1 = IR, -1 = none */
 static lv_obj_t *s_presets; /* built on open, freed on close: ~10 KB of heap the gig needs more */
 static lv_obj_t *s_rename_view; /* built on open, freed on close (the keyboard) */
 static ui_text_edit_t *s_rename_edit; /* freed with the page */
@@ -73,6 +75,16 @@ static int s_cap_volume = -1;       /* raw 0..255, -1 = unknown */
 static int s_cap_preset = -1;      /* preset the capture belongs to */
 static lv_obj_t *s_cap_dot, *s_cap_name_l;
 static ui_value_ctrl_t *s_cap_vol;  /* the volume control while the page is open (freed with it) */
+/* The IR as the last state dump showed it, and its settings as the pedal last reported them. */
+static char s_ir_name[NANO_NAME_CAP];
+static bool s_ir_on;
+static nano_cab_settings_t s_ir_set; /* the pedal's last answer (values, microphone, position) */
+static bool s_ir_known;            /* s_ir holds the pedal's answer for s_ir_owner */
+static int s_ir_owner = -1;        /* preset the settings belong to */
+static lv_obj_t *s_ir_dot_l, *s_ir_name_l, *s_ir_hint, *s_ir_phase_btn, *s_ir_page;
+#define IR_MIC_BUTTONS 6 /* Cortex Cloud offers five */
+static lv_obj_t *s_ir_mic_btn[IR_MIC_BUTTONS], *s_ir_pos_btn[NANO_CAB_POSITIONS], *s_ir_mic_note;
+static ui_value_ctrl_t *s_ir_ctrl[NANO_CAB_PARAMS]; /* while the IR tab exists (freed with it) */
 static lv_obj_t *s_tiles[NANO_FX_SLOT_COUNT], *s_tile_names[NANO_FX_SLOT_COUNT], *s_tile_tags[NANO_FX_SLOT_COUNT];
 static bool s_tile_present[NANO_FX_SLOT_COUNT];
 static bool s_tile_on[NANO_FX_SLOT_COUNT];
@@ -167,7 +179,7 @@ static const lv_font_t *tile_font(const char *text, int32_t max_w)
     return &montserrat_medium_12;
 }
 
-/* ---- pager: a left column with up / down buttons and a rotated "Page n/m" ----
+/* ---- pager: a left column with up / down buttons and "Page" over "n/m" between them ----
  * Pages are either child boxes shown one at a time (pager_add_page) or virtual: a count and an
  * on_show callback that refills one box (pager_set_count, the presets list). */
 
@@ -196,11 +208,11 @@ static void pager_show(pager_t *p, int idx)
     lv_obj_set_hidden(p->down, solo);
     lv_obj_set_hidden(p->label, solo);
     char t[24];
-    snprintf(t, sizeof(t), "%s %u/%u", p->unit, (unsigned)(idx + 1) & 0xff, (unsigned)p->count & 0xff);
+    snprintf(t, sizeof(t), "%s\n%u/%u", p->unit, (unsigned)(idx + 1) & 0xff, (unsigned)p->count & 0xff);
     lv_label_set_text(p->label, t);
-    /* The rotated label stays centred on the column whatever its length. */
+    /* Upright, centred on the column: a rotated label needs a 32-bit layer per redraw, 4-9 KB of heap at a
+     * time on every page change (the IR page's heap dip to 10 KB, 2026-10-09). */
     lv_obj_update_layout(p->label);
-    lv_obj_set_x(p->label, EDGE_X + PAGER_W / 2 - lv_obj_get_width(p->label) / 2);
     lv_obj_set_y(p->label, p->mid_y - lv_obj_get_height(p->label) / 2);
     /* Ends of the range: dim the arrow that goes nowhere (a wrapping pager has none). */
     lv_obj_set_style_opa(p->up, idx == 0 && !p->wrap ? LV_OPA_30 : LV_OPA_COVER, 0);
@@ -227,12 +239,11 @@ static void pager_create(pager_t *p, lv_obj_t *parent, int32_t y, int32_t h, con
     lv_obj_add_event_cb(p->up, ui_on_pressed, LV_EVENT_PRESSED, NULL);
     p->down = ui_button(parent, EDGE_X, y + h - PAGER_BTN_H, PAGER_W, PAGER_BTN_H, LV_SYMBOL_DOWN, &lv_font_montserrat_14, C_PANEL, C_MUTED, on_pager_step, p);
     lv_obj_add_event_cb(p->down, ui_on_pressed, LV_EVENT_PRESSED, NULL);
-    /* The label is laid out horizontally, then rotated 90° counter-clockwise about its centre. */
     p->label = ui_label(parent, &montserrat_medium_12, C_MUTED);
     lv_label_set_text(p->label, "");
-    lv_obj_set_style_transform_pivot_x(p->label, LV_PCT(50), 0);
-    lv_obj_set_style_transform_pivot_y(p->label, LV_PCT(50), 0);
-    lv_obj_set_style_transform_rotation(p->label, 2700, 0);
+    lv_obj_set_x(p->label, EDGE_X);
+    lv_obj_set_width(p->label, PAGER_W);
+    lv_obj_set_style_text_align(p->label, LV_TEXT_ALIGN_CENTER, 0);
 }
 
 static lv_obj_t *pager_add_page(pager_t *p, lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h)
@@ -266,6 +277,7 @@ static void on_open_tempo(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_TEMPO
 static void on_open_update(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_UPDATE); }
 static void on_open_presets(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_PRESETS); }
 static void on_open_capture(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_CAPTURE); }
+static void on_open_ir(lv_event_t *e) { (void)e; nano_ui_show(NANO_VIEW_IR); }
 static void on_tempo_step(lv_event_t *e)
 {
     int delta = (int)(intptr_t)lv_event_get_user_data(e);
@@ -497,12 +509,18 @@ static void build_main(lv_obj_t *scr)
     lv_obj_set_pos(s_capture, lx + 15, LINES_Y + 2);
     lv_obj_set_size(s_capture, lw, lv_font_get_line_height(&lv_font_montserrat_12)); /* one line: LONG_DOT needs a fixed height */
     lv_label_set_long_mode(s_capture, LV_LABEL_LONG_DOT);
-    /* Tap the capture line (dot or name) for the capture page. */
+    /* Hold the capture line (dot or name) for the capture page, like the preset name for rename. */
     lv_obj_t *cap_hit = ui_box(s_main, lx - 4, LINES_Y, 15 + lw + 8, 20, C_BG);
     lv_obj_set_style_bg_opa(cap_hit, LV_OPA_TRANSP, 0);
     lv_obj_set_clickable(cap_hit, true);
     lv_obj_add_event_cb(cap_hit, ui_on_pressed, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(cap_hit, on_open_capture, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(cap_hit, on_open_capture, LV_EVENT_LONG_PRESSED, NULL);
+    /* Hold the IR line below it for the IR tab of the same page. */
+    lv_obj_t *ir_hit = ui_box(s_main, lx - 4, LINES_Y + 20, 15 + lw + 8, 20, C_BG);
+    lv_obj_set_style_bg_opa(ir_hit, LV_OPA_TRANSP, 0);
+    lv_obj_set_clickable(ir_hit, true);
+    lv_obj_add_event_cb(ir_hit, ui_on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(ir_hit, on_open_ir, LV_EVENT_LONG_PRESSED, NULL);
     s_ir_dot = ui_dot(s_main, lx, LINES_Y + 26, 9);
     s_ir = ui_label(s_main, &lv_font_montserrat_12, C_MUTED);
     lv_obj_set_pos(s_ir, lx + 15, LINES_Y + 22);
@@ -933,7 +951,7 @@ static void cap_vol_changed(int raw, void *user)
 
 static void capture_refresh(void)
 {
-    if (!s_capture_view) return;
+    if (!s_capture_view || s_tab_built != 0) return;
     lv_obj_set_style_bg_color(s_cap_dot, lv_color_hex(s_cap_on ? C_ON : C_DIM), 0);
     lv_label_set_text(s_cap_name_l, s_cap_name[0] ? s_cap_name : "No capture");
     lv_obj_set_style_text_color(s_cap_name_l, lv_color_hex(s_cap_on ? C_TEXT : C_OFF_TEXT), 0);
@@ -954,14 +972,45 @@ static void capture_from_state(const nano_state_t *st)
     capture_refresh();
 }
 
-static void build_capture(lv_obj_t *scr)
-{
-    s_capture_view = make_overlay_cb(scr, "Capture", on_close, on_close, NULL);
+/* Capture / IR: one page with a tab per source in the header (a view each, NANO_VIEW_CAPTURE / _IR). */
+#define TAB_TOP (TOP_H + 4)
 
+static void on_tab(lv_event_t *e)
+{
+    nano_ui_show(lv_event_get_target_obj(e) == s_tab_btn[1] ? NANO_VIEW_IR : NANO_VIEW_CAPTURE);
+}
+
+static void build_capture_tab(lv_obj_t *page);
+static void build_ir_tab(lv_obj_t *page);
+
+/* Only the tab showing exists: both at once ran the heap out (2026-10-09, a crash drawing the pager label). The
+ * tap comes from the header, so the content can go at once. */
+static void tabs_select(int tab)
+{
+    for (int i = 0; i < 2; i++) {
+        bool on = i == tab;
+        lv_obj_set_style_bg_opa(s_tab_btn[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(s_tab_btn[i], on ? 2 : 0, 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(s_tab_btn[i], 0), lv_color_hex(on ? C_TEXT : C_MUTED), 0);
+    }
+    if (s_tab_built == tab) return;
+    lv_obj_clean(s_tab_page);
+    s_cap_vol = NULL; /* freed with the content */
+    memset(s_ir_ctrl, 0, sizeof(s_ir_ctrl));
+    memset(s_ir_mic_btn, 0, sizeof(s_ir_mic_btn));
+    memset(s_ir_pos_btn, 0, sizeof(s_ir_pos_btn));
+    s_ir_mic_note = NULL;
+    s_tab_built = tab;
+    if (tab == 0) build_capture_tab(s_tab_page);
+    else build_ir_tab(s_tab_page);
+}
+
+static void build_capture_tab(lv_obj_t *page)
+{
     /* Name with its on / off dot (up to two lines). */
-    s_cap_dot = ui_dot(s_capture_view, 14, 44, 12);
-    s_cap_name_l = ui_label(s_capture_view, &lv_font_montserrat_20, C_TEXT);
-    lv_obj_set_pos(s_cap_name_l, 34, 38);
+    s_cap_dot = ui_dot(page, 14, 44 - TAB_TOP, 12);
+    s_cap_name_l = ui_label(page, &lv_font_montserrat_20, C_TEXT);
+    lv_obj_set_pos(s_cap_name_l, 34, 38 - TAB_TOP);
     lv_obj_set_width(s_cap_name_l, SCREEN_W - 34 - 12);
     lv_label_set_long_mode(s_cap_name_l, LV_LABEL_LONG_WRAP);
 
@@ -977,16 +1026,290 @@ static void build_capture(lv_obj_t *scr)
     };
     ui_value_ctrl_cfg_t cfg = vol;
     if (!s_cb.on_capture_volume) cfg.on_change = NULL; /* read-only */
-    s_cap_vol = ui_value_ctrl_create(s_capture_view, 92, &cfg);
+    s_cap_vol = ui_value_ctrl_create(page, 92 - TAB_TOP, &cfg);
     ui_value_ctrl_report(s_cap_vol, s_cap_volume, s_cap_preset);
 
     if (!s_cb.on_capture_volume) {
-        lv_obj_t *hint = ui_label(s_capture_view, &lv_font_montserrat_12, C_MUTED);
+        lv_obj_t *hint = ui_label(page, &lv_font_montserrat_12, C_MUTED);
         lv_obj_set_width(hint, SCREEN_W);
         lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_pos(hint, 0, 92 + UI_VALUE_CTRL_HEIGHT + 2);
+        lv_obj_set_pos(hint, 0, 92 - TAB_TOP + UI_VALUE_CTRL_HEIGHT + 2);
         lv_label_set_text(hint, "Read-only for now");
     }
+}
+
+/*
+ * IR tab: name, on / off dot and Phase, then a page per setting of Cortex Cloud's IR loader: Level, High pass,
+ * Low pass, then microphone and position (factory IRs only). The sliders run on the pedal's own 0..1, like
+ * Cortex Cloud's; the steps count in readout units: Level tenths of a dB (raw = tenths + 960), High pass
+ * Hz, Low pass Hz with 100 Hz steps.
+ */
+#define IR_LEVEL_ZERO 960 /* raw of 0.0 dB: -96.0 dB = raw 0 */
+
+static int ir_level_pos(int raw) { return (int)lroundf(nano_cab_normalized(NANO_CAB_LEVEL, (raw - IR_LEVEL_ZERO) / 10.0f) * 1000.0f); }
+static int ir_level_raw(int pos) { return (int)lroundf(nano_cab_value(NANO_CAB_LEVEL, pos / 1000.0f) * 10.0f) + IR_LEVEL_ZERO; }
+static int ir_hp_pos(int raw) { return (int)lroundf(nano_cab_normalized(NANO_CAB_HIGH_PASS, (float)raw) * 1000.0f); }
+static int ir_hp_raw(int pos) { return (int)lroundf(nano_cab_value(NANO_CAB_HIGH_PASS, pos / 1000.0f)); }
+static int ir_lp_pos(int raw) { return (int)lroundf(nano_cab_normalized(NANO_CAB_LOW_PASS, (float)raw) * 1000.0f); }
+static int ir_lp_raw(int pos) { return (int)lroundf(nano_cab_value(NANO_CAB_LOW_PASS, pos / 1000.0f)); }
+static int ir_same(int v) { return v; }
+static int ir_lp_readout(int raw) { return raw / 100; }
+
+static void ir_level_format(int raw, char *out, size_t cap)
+{
+    int t = raw - IR_LEVEL_ZERO;
+    snprintf(out, cap, "%c%d.%d dB", t < 0 ? '-' : '+', abs(t) / 10, abs(t) % 10);
+}
+
+static void ir_hz_format(int raw, char *out, size_t cap) { snprintf(out, cap, "%d Hz", raw); }
+
+static void ir_khz_format(int raw, char *out, size_t cap)
+{
+    int r = raw / 100;
+    snprintf(out, cap, "%d.%d kHz", r / 10, r % 10);
+}
+
+/* The pedal's 0..1 as a control's raw value, and back. */
+static int ir_raw_of(nano_cab_param_t p, float n)
+{
+    float v = nano_cab_value(p, n);
+    return p == NANO_CAB_LEVEL ? (int)lroundf(v * 10.0f) + IR_LEVEL_ZERO : (int)lroundf(v);
+}
+
+static float ir_normalized_of(nano_cab_param_t p, int raw)
+{
+    return nano_cab_normalized(p, p == NANO_CAB_LEVEL ? (raw - IR_LEVEL_ZERO) / 10.0f : (float)raw);
+}
+
+static void ir_changed(int raw, void *user)
+{
+    nano_cab_param_t p = (nano_cab_param_t)(intptr_t)user;
+    s_ir_set.values[p] = ir_normalized_of(p, raw);
+    if (s_cb.on_cab_setting) s_cb.on_cab_setting((uint8_t)p, s_ir_set.values[p]);
+}
+
+static const ui_value_ctrl_cfg_t IR_CFG[NANO_CAB_PARAMS] = {
+    [NANO_CAB_LEVEL] = {
+        .raw_min = 0, .raw_max = IR_LEVEL_ZERO + 120,
+        .pos_min = 0, .pos_max = 1000,
+        .raw_to_pos = ir_level_pos, .pos_to_raw = ir_level_raw,
+        .readout = ir_same, .format = ir_level_format,
+        .fine = 1, .coarse = 10,
+        .step_labels = { "-1 dB", "-0.1", "+0.1", "+1 dB" },
+        .reset_raw = IR_LEVEL_ZERO,
+        .turn = 6,
+    },
+    [NANO_CAB_HIGH_PASS] = {
+        .raw_min = 20, .raw_max = 800,
+        .pos_min = 0, .pos_max = 1000,
+        .raw_to_pos = ir_hp_pos, .pos_to_raw = ir_hp_raw,
+        .readout = ir_same, .format = ir_hz_format,
+        .fine = 1, .coarse = 10,
+        .step_labels = { "-10 Hz", "-1", "+1", "+10 Hz" },
+        .reset_raw = -1,
+        .turn = 6,
+    },
+    [NANO_CAB_LOW_PASS] = {
+        .raw_min = 1000, .raw_max = 20000,
+        .pos_min = 0, .pos_max = 1000,
+        .raw_to_pos = ir_lp_pos, .pos_to_raw = ir_lp_raw,
+        .readout = ir_lp_readout, .format = ir_khz_format,
+        .fine = 1, .coarse = 10,
+        .step_labels = { "-1 kHz", "-0.1", "+0.1", "+1 kHz" },
+        .reset_raw = -1,
+        .turn = 6,
+    },
+};
+static const char *const IR_CAPTIONS[NANO_CAB_PARAMS] = { "Level", "High pass", "Low pass" };
+
+static pager_t s_ir_pager;
+
+static void ir_choice_style(lv_obj_t *b, bool selected, bool enabled)
+{
+    lv_obj_set_style_border_width(b, selected ? 2 : 0, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(selected ? C_PANEL_2 : C_PANEL), 0);
+    lv_obj_set_style_opa(b, enabled ? LV_OPA_COVER : LV_OPA_40, 0);
+    if (enabled) lv_obj_remove_state(b, LV_STATE_DISABLED);
+    else lv_obj_add_state(b, LV_STATE_DISABLED);
+}
+
+/* Microphone page: the IR's microphones (as the pedal lists them) and the six positions. */
+static void ir_refresh_mics(void)
+{
+    bool usable = s_ir_on && s_ir_known && s_ir_set.factory && s_cb.on_cab_mic;
+    if (!s_ir_mic_note) return; /* another page shows */
+    for (int i = 0; i < IR_MIC_BUTTONS; i++) {
+        lv_obj_t *b = s_ir_mic_btn[i];
+        bool shown = s_ir_known && s_ir_set.factory && i < s_ir_set.mic_count;
+        lv_obj_set_hidden(b, !shown);
+        if (!shown) continue;
+        lv_label_set_text(lv_obj_get_child(b, 0), s_ir_set.mics[i]);
+        ir_choice_style(b, strcmp(s_ir_set.mics[i], s_ir_set.mic) == 0, usable);
+    }
+    for (int i = 0; i < NANO_CAB_POSITIONS; i++) {
+        lv_obj_set_hidden(s_ir_pos_btn[i], !(s_ir_known && s_ir_set.factory));
+        ir_choice_style(s_ir_pos_btn[i], s_ir_set.position == i, usable);
+    }
+    lv_label_set_text(s_ir_mic_note, !s_ir_known || s_ir_set.factory ? "" : "Your own IR: no microphone choice");
+}
+
+static void ir_refresh_phase(void)
+{
+    bool usable = s_ir_on && s_ir_known && s_cb.on_cab_phase;
+    lv_obj_set_style_bg_color(s_ir_phase_btn, lv_color_hex(s_ir_set.phase_inverted ? C_ACCENT : C_PANEL), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(s_ir_phase_btn, 0), lv_color_hex(s_ir_set.phase_inverted ? C_FX_TEXT : C_TEXT), 0);
+    lv_obj_set_style_opa(s_ir_phase_btn, usable ? LV_OPA_COVER : LV_OPA_40, 0);
+}
+
+/* Name, hint and the controls from s_ir_*: values only while the IR is on and the pedal has answered. `fresh` =
+ * the pedal's answer to a read after the last change here (shown even while a control holds its own). */
+static void ir_refresh_as(bool fresh)
+{
+    if (!s_capture_view || s_tab_built != 1) return;
+    lv_obj_set_style_bg_color(s_ir_dot_l, lv_color_hex(s_ir_on ? C_ON : C_DIM), 0);
+    lv_label_set_text(s_ir_name_l, s_ir_name[0] ? s_ir_name : "No IR");
+    lv_obj_set_style_text_color(s_ir_name_l, lv_color_hex(s_ir_on ? C_TEXT : C_OFF_TEXT), 0);
+    lv_label_set_text(s_ir_hint, !s_ir_on ? "IR is off" : !s_ir_known ? "Reading..." : "");
+    for (int i = 0; i < NANO_CAB_PARAMS; i++) {
+        int raw = s_ir_on && s_ir_known ? ir_raw_of((nano_cab_param_t)i, s_ir_set.values[i]) : -1;
+        if (fresh) ui_value_ctrl_set(s_ir_ctrl[i], raw, s_ir_owner);
+        else ui_value_ctrl_report(s_ir_ctrl[i], raw, s_ir_owner);
+    }
+    ir_refresh_mics();
+    ir_refresh_phase();
+}
+
+static void ir_refresh(void) { ir_refresh_as(false); }
+
+static void on_ir_mic(lv_event_t *e)
+{
+    lv_obj_t *b = lv_event_get_target_obj(e);
+    if (!s_ir_on || !s_ir_known || !s_ir_set.factory || !s_cb.on_cab_mic) return;
+    for (int i = 0; i < IR_MIC_BUTTONS; i++) {
+        if (b == s_ir_mic_btn[i] && i < s_ir_set.mic_count) snprintf(s_ir_set.mic, sizeof(s_ir_set.mic), "%s", s_ir_set.mics[i]);
+    }
+    for (int i = 0; i < NANO_CAB_POSITIONS; i++) {
+        if (b == s_ir_pos_btn[i]) s_ir_set.position = (uint8_t)i;
+    }
+    ir_refresh_mics(); /* shown now; the app reads the IR again to confirm */
+    s_cb.on_cab_mic(s_ir_set.position, s_ir_set.mic);
+}
+
+static void on_ir_phase(lv_event_t *e)
+{
+    (void)e;
+    if (!s_ir_on || !s_ir_known || !s_cb.on_cab_phase) return;
+    s_ir_set.phase_inverted = !s_ir_set.phase_inverted;
+    ir_refresh_phase(); /* shown now; the app reads the IR again to confirm */
+    s_cb.on_cab_phase(s_ir_set.phase_inverted);
+}
+
+static void build_ir_mic_page(lv_obj_t *p)
+{
+    const int32_t w = SCREEN_W - SETTING_X - 8, gap = 6;
+    lv_obj_t *cap = ui_label(p, &lv_font_montserrat_14, C_MUTED);
+    lv_label_set_text(cap, "Microphone");
+    const int32_t mw = (w - 2 * gap) / 3, mh = 34;
+    for (int i = 0; i < IR_MIC_BUTTONS; i++) {
+        int row = i / 3, col = i % 3;
+        lv_obj_t *b = ui_button(p, col * (mw + gap), 20 + row * (mh + 4), mw, mh, "", &montserrat_medium_12, C_PANEL, C_TEXT, on_ir_mic, NULL);
+        lv_obj_set_style_radius(b, 8, 0);
+        lv_obj_set_style_border_color(b, lv_color_hex(C_ACCENT), 0);
+        lv_obj_t *l = lv_obj_get_child(b, 0);
+        lv_obj_set_width(l, mw - 6);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(l);
+        lv_obj_add_event_cb(b, ui_on_pressed, LV_EVENT_PRESSED, NULL);
+        lv_obj_set_hidden(b, true);
+        s_ir_mic_btn[i] = b;
+    }
+    const int32_t py = 20 + 2 * (mh + 4) + 6;
+    lv_obj_t *pc = ui_label(p, &lv_font_montserrat_14, C_MUTED);
+    lv_label_set_text(pc, "Position");
+    lv_obj_set_pos(pc, 0, py);
+    const int32_t pw = (w - 5 * gap) / NANO_CAB_POSITIONS;
+    for (int i = 0; i < NANO_CAB_POSITIONS; i++) {
+        char t[4];
+        snprintf(t, sizeof(t), "%d", i + 1);
+        lv_obj_t *b = ui_button(p, i * (pw + gap), py + 20, pw, 34, t, &lv_font_montserrat_14, C_PANEL, C_TEXT, on_ir_mic, NULL);
+        lv_obj_set_style_radius(b, 8, 0);
+        lv_obj_set_style_border_color(b, lv_color_hex(C_ACCENT), 0);
+        lv_obj_add_event_cb(b, ui_on_pressed, LV_EVENT_PRESSED, NULL);
+        s_ir_pos_btn[i] = b;
+    }
+    s_ir_mic_note = ui_label(p, &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_pos(s_ir_mic_note, 0, 24);
+    lv_obj_set_width(s_ir_mic_note, w);
+}
+
+/* Pages 1..3 Level, High pass, Low pass; 4 microphone and position. */
+static void ir_show_page(int idx)
+{
+    lv_obj_clean(s_ir_page);
+    memset(s_ir_ctrl, 0, sizeof(s_ir_ctrl));
+    memset(s_ir_mic_btn, 0, sizeof(s_ir_mic_btn));
+    memset(s_ir_pos_btn, 0, sizeof(s_ir_pos_btn));
+    s_ir_mic_note = NULL;
+    if (idx < NANO_CAB_PARAMS) {
+        lv_obj_t *cap = ui_label(s_ir_page, &lv_font_montserrat_14, C_MUTED);
+        lv_label_set_text(cap, IR_CAPTIONS[idx]);
+        ui_value_ctrl_cfg_t cfg = IR_CFG[idx];
+        cfg.on_change = s_cb.on_cab_setting ? ir_changed : NULL;
+        cfg.user = (void *)(intptr_t)idx;
+        s_ir_ctrl[idx] = ui_value_ctrl_create(s_ir_page, 26, &cfg);
+    } else {
+        build_ir_mic_page(s_ir_page);
+    }
+    if (s_ir_hint) ir_refresh_as(true); /* the new page's controls start from the pedal's values */
+}
+
+static void build_ir_tab(lv_obj_t *page)
+{
+    /* Name with its on / off dot (one line), Phase at the right. */
+    const int32_t phase_w = 58;
+    s_ir_hint = NULL;
+    s_ir_dot_l = ui_dot(page, 14, 44 - TAB_TOP, 12);
+    s_ir_name_l = ui_label(page, &lv_font_montserrat_20, C_TEXT);
+    lv_obj_set_pos(s_ir_name_l, 34, 38 - TAB_TOP);
+    lv_obj_set_size(s_ir_name_l, SCREEN_W - 34 - 8 - phase_w - 8, lv_font_get_line_height(&lv_font_montserrat_20));
+    lv_label_set_long_mode(s_ir_name_l, LV_LABEL_LONG_DOT);
+    s_ir_phase_btn = ui_button(page, SCREEN_W - 8 - phase_w, 35 - TAB_TOP, phase_w, 28, "Phase", &lv_font_montserrat_14, C_PANEL, C_TEXT, on_ir_phase, NULL);
+    lv_obj_set_style_radius(s_ir_phase_btn, 8, 0);
+    lv_obj_set_ext_click_area(s_ir_phase_btn, 4);
+    lv_obj_add_event_cb(s_ir_phase_btn, ui_on_pressed, LV_EVENT_PRESSED, NULL);
+
+    /* A page per setting, the pager on the left (page coordinates: the tab starts at TAB_TOP); only the page
+     * showing is built (ir_show_page). */
+    const int32_t top = 68 - TAB_TOP, h = SCREEN_H - TAB_TOP - top - 4;
+    s_ir_page = ui_box(page, SETTING_X, top, SCREEN_W - SETTING_X, h, C_BG);
+    pager_create(&s_ir_pager, page, top, h, "Page");
+    s_ir_pager.on_show = ir_show_page;
+    pager_set_count(&s_ir_pager, NANO_CAB_PARAMS + 1, 0);
+    /* Why there are no values, right of the captions on every page. */
+    s_ir_hint = ui_label(page, &lv_font_montserrat_14, C_WARN);
+    lv_obj_set_width(s_ir_hint, SCREEN_W - SETTING_X - 8);
+    lv_obj_set_pos(s_ir_hint, SETTING_X, top);
+    lv_obj_set_style_text_align(s_ir_hint, LV_TEXT_ALIGN_RIGHT, 0);
+}
+
+static void build_capture(lv_obj_t *scr)
+{
+    s_capture_view = make_overlay_cb(scr, "", on_close, on_close, NULL);
+    /* Tabs between "<" and "x". */
+    static const char *const names[2] = { "Capture", "IR" };
+    const int32_t x0 = 48, w = (SCREEN_W - 2 * x0 - 6) / 2;
+    for (int i = 0; i < 2; i++) {
+        s_tab_btn[i] = ui_button(s_capture_view, x0 + i * (w + 6), 1, w, TOP_H + 2, names[i], &lv_font_montserrat_14, C_PANEL_2, C_TEXT, on_tab, NULL);
+        lv_obj_set_style_radius(s_tab_btn[i], 6, 0);
+        lv_obj_set_style_border_side(s_tab_btn[i], LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_color(s_tab_btn[i], lv_color_hex(C_ACCENT), 0);
+        lv_obj_set_ext_click_area(s_tab_btn[i], 4);
+        lv_obj_add_event_cb(s_tab_btn[i], ui_on_pressed, LV_EVENT_PRESSED, NULL);
+    }
+    /* Below the header, so the header stays tappable. */
+    s_tab_page = ui_box(s_capture_view, 0, TAB_TOP, SCREEN_W, SCREEN_H - TAB_TOP, C_BG);
+    s_tab_built = -1;
 }
 
 /*
@@ -1272,6 +1595,7 @@ static void show_view(nano_view_t view, bool notify)
     if (s_view == NANO_VIEW_UPDATE && notify && s_cb.on_update_close) s_cb.on_update_close();
     if (s_view == NANO_VIEW_TUNER && notify && s_cb.on_tuner) s_cb.on_tuner(false);
     if (s_view == NANO_VIEW_TEMPO && notify && s_cb.on_tempo_view) s_cb.on_tempo_view(false);
+    nano_view_t prev = s_view;
     s_view = view;
     lv_obj_set_hidden(s_menu, view != NANO_VIEW_MENU);
     lv_obj_set_hidden(s_settings, view != NANO_VIEW_SETTINGS);
@@ -1284,15 +1608,24 @@ static void show_view(nano_view_t view, bool notify)
         lv_obj_delete_async(s_presets);
         s_presets = NULL;
     }
-    if (view == NANO_VIEW_CAPTURE) {
-        build_capture(s_scr);
+    if (view == NANO_VIEW_CAPTURE || view == NANO_VIEW_IR) {
+        if (!s_capture_view) build_capture(s_scr);
+        tabs_select(view == NANO_VIEW_IR);
         capture_refresh();
+        ir_refresh();
         lv_obj_set_hidden(s_capture_view, false);
     } else if (s_capture_view) {
         lv_obj_delete_async(s_capture_view);
         s_capture_view = NULL;
+        s_tab_built = -1;
         s_cap_vol = NULL; /* freed with the page */
+        memset(s_ir_ctrl, 0, sizeof(s_ir_ctrl));
+        memset(s_ir_mic_btn, 0, sizeof(s_ir_mic_btn));
+        memset(s_ir_pos_btn, 0, sizeof(s_ir_pos_btn));
+        s_ir_mic_note = NULL;
     }
+    /* The app reads the IR settings while their tab shows (after the tab exists: the answer lands in it). */
+    if ((prev == NANO_VIEW_IR) != (view == NANO_VIEW_IR) && s_cb.on_ir_view) s_cb.on_ir_view(view == NANO_VIEW_IR);
     if (view == NANO_VIEW_RENAME) {
         build_rename(s_scr);
         lv_obj_set_hidden(s_rename_view, false);
@@ -1329,7 +1662,7 @@ void nano_ui_set_connected(bool live)
     s_base_view = live ? NANO_VIEW_MAIN : NANO_VIEW_CONNECT;
     if (live && s_view == NANO_VIEW_CONNECT) show_view(NANO_VIEW_MAIN, false);
     /* Down: the pedal's views make no claims any more; the menu and settings can stay open. */
-    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO || s_view == NANO_VIEW_CAPTURE || s_view == NANO_VIEW_RENAME)) show_view(NANO_VIEW_CONNECT, false);
+    if (!live && (s_view == NANO_VIEW_MAIN || s_view == NANO_VIEW_TUNER || s_view == NANO_VIEW_TEMPO || s_view == NANO_VIEW_CAPTURE || s_view == NANO_VIEW_IR || s_view == NANO_VIEW_RENAME)) show_view(NANO_VIEW_CONNECT, false);
 }
 
 void nano_ui_show(nano_view_t view)
@@ -1504,6 +1837,10 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
     set_line(s_capture_dot, s_capture, st->capture_name, st->capture_on, "No capture");
     capture_from_state(st);
     set_line(s_ir_dot, s_ir, st->ir_short_name, st->cab_on, "No IR");
+    snprintf(s_ir_name, sizeof(s_ir_name), "%s", st->ir_short_name);
+    s_ir_on = st->cab_on;
+    if (s_ir_owner != st->active_preset) s_ir_known = false; /* the app reads the new preset's settings */
+    ir_refresh();
     s_gate_on = st->gate_on;
     lv_obj_set_style_bg_color(s_gate, lv_color_hex(st->gate_on ? nano_category_color(NANO_CAT_UTILITY) : C_OFF), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(s_gate, 0), lv_color_hex(st->gate_on ? C_FX_TEXT : C_TEXT), 0);
@@ -1540,6 +1877,19 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
         }
     }
     refresh_expression();
+}
+
+void nano_ui_ir_page(int index)
+{
+    if (s_capture_view && s_tab_built == 1) pager_show(&s_ir_pager, index);
+}
+
+void nano_ui_set_ir_settings(const nano_cab_settings_t *settings, int preset, bool fresh)
+{
+    s_ir_owner = preset;
+    s_ir_known = settings != NULL;
+    if (settings) s_ir_set = *settings;
+    ir_refresh_as(fresh);
 }
 
 void nano_ui_set_tempo(float bpm, bool tapping)

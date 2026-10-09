@@ -80,6 +80,8 @@ static void noop_b(bool b) { (void)b; }
 static void noop_u8(uint8_t v) { (void)v; }
 static void noop_i(int v) { (void)v; }
 static void noop_rename(uint8_t i, const char *n) { (void)i; (void)n; }
+static void noop_cab(uint8_t p, float n) { (void)p; (void)n; }
+static void noop_mic(uint8_t p, const char *m) { (void)p; (void)m; }
 
 int main(int argc, char **argv)
 {
@@ -93,7 +95,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_mic = noop_mic };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -284,6 +286,74 @@ int main(int argc, char **argv)
         nano_ui_set_state(&lng, &meta);
         render(200);
         save(dir, "9i-capture-page-off");
+        /* IR tab: waiting for the pedal, then -10.1 dB / 120 Hz / 9.5 kHz on each page, then the IR off. */
+        lng.cab_on = true;
+        nano_ui_set_state(&lng, &meta);
+        nano_ui_show(NANO_VIEW_IR);
+        render(200);
+        save(dir, "9n-ir-reading");
+        static nano_cab_settings_t ir;
+        memset(&ir, 0, sizeof(ir));
+        ir.values[0] = 0.5925f;            /* -2.9 dB */
+        ir.values[1] = 0.220842f;          /* 83 Hz */
+        ir.values[2] = 0.59537f;           /* 9006 Hz */
+        ir.factory = true;
+        ir.kind = 6;
+        strcpy(ir.ir_name, "412 CA Stand OS A V30 '01");
+        strcpy(ir.mic, "Condenser 184");
+        ir.position = 1;
+        static const char *const mics[] = { "Condenser 184", "Condenser 414", "Dynamic 57 Off-Axis", "Dynamic 57", "Ribbon 160" };
+        for (int i = 0; i < 5; i++) strcpy(ir.mics[i], mics[i]);
+        ir.mic_count = 5;
+        nano_ui_set_ir_settings(&ir, lng.active_preset, true);
+        render(200);
+        save(dir, "9o-ir-level");
+        nano_ui_ir_page(1);
+        render(200);
+        save(dir, "9p-ir-high-pass");
+        nano_ui_ir_page(2);
+        render(200);
+        save(dir, "9q-ir-low-pass");
+        nano_ui_ir_page(3);
+        render(200);
+        save(dir, "9q2-ir-mic");
+        lng.cab_on = false;
+        nano_ui_set_state(&lng, &meta);
+        render(200);
+        save(dir, "9r-ir-off");
+        /* Tab switches rebuild the content: back and forth twice. */
+        for (int i = 0; i < 2; i++) {
+            nano_ui_show(NANO_VIEW_CAPTURE);
+            render(50);
+            nano_ui_show(NANO_VIEW_IR);
+            render(50);
+            nano_ui_ir_page(3);
+            render(50);
+        }
+        save(dir, "9s-ir-after-switches");
+        /* EXIT after an edit: a step on the Low pass page, then the pedal's reverted values (a fresh read). */
+        lng.cab_on = true;
+        nano_ui_set_state(&lng, &meta);
+        nano_ui_set_ir_settings(&ir, lng.active_preset, true);
+        nano_ui_ir_page(2);
+        render(50);
+        {
+            lv_obj_t *stack[256]; int sp = 0, nb = 0; lv_obj_t *plus1k = NULL;
+            stack[sp++] = lv_screen_active();
+            while (sp) {
+                lv_obj_t *x = stack[--sp];
+                if (lv_obj_get_child_count(x) == 1 && lv_obj_check_type(lv_obj_get_child(x, 0), &lv_label_class) && strcmp(lv_label_get_text(lv_obj_get_child(x, 0)), "+1 kHz") == 0 && !lv_obj_has_flag(x, LV_OBJ_FLAG_HIDDEN)) plus1k = x;
+                for (uint32_t i = 0; i < lv_obj_get_child_count(x) && sp < 256; i++) stack[sp++] = lv_obj_get_child(x, i);
+                nb++;
+            }
+            printf("objects %d, +1 kHz button %p\n", nb, (void *)plus1k);
+            if (plus1k) lv_obj_send_event(plus1k, LV_EVENT_CLICKED, NULL);
+        }
+        render(50);
+        save(dir, "9t-ir-lp-stepped");
+        nano_ui_set_ir_settings(&ir, lng.active_preset, true);
+        render(50);
+        save(dir, "9u-ir-lp-reverted");
         nano_ui_show(NANO_VIEW_MAIN);
         /* Rename page (long press on the name): 20 characters, then the pedal's refusal. */
         nano_ui_open_rename(0);

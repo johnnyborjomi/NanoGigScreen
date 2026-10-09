@@ -55,6 +55,8 @@ enum {
     NANO_MSG_EXPRESSION = 0x40,      /* pedal position 0..254 */
     NANO_MSG_SETTINGS = 0x42,
     NANO_MSG_OUTPUTS_MUTE_ACK = 0x44, /* any settings write answers this (UpdateSettingsResponse) */
+    NANO_MSG_CAB_SETTING = 0x5e,     /* nano_build_cab_setting */
+    NANO_MSG_CAB_SETTINGS = 0x60,    /* reply to nano_build_cab_settings_request (nano_decode_cab_settings) */
     NANO_MSG_RENAME_REPLY = 0x70,    /* reply to nano_build_preset_rename */
     NANO_MSG_CHANGED = 0x73,         /* unsaved changes on / off (field 3) */
     NANO_MSG_TUNER = 0x7f,           /* tuner on/off (our write and the pedal's report) */
@@ -139,6 +141,39 @@ int nano_capture_volume_tenths(uint8_t raw);
  */
 #define NANO_PRESET_NAME_MAX 31
 size_t nano_build_preset_rename(uint8_t *out, size_t cap, uint8_t preset_index, const char *name);
+
+/*
+ * IR (cab) of the current preset: Cortex Cloud's IR loader. Read and level / filter writes from
+ * DrD85/nano-cortex-controller (MIT); phase, microphone and position writes and the scales from an Android
+ * HCI snoop of Cortex Cloud (2026-10-09). All writes are live edits: audible, the preset is not saved.
+ *   read      `08 C0 18 00 20 <slot - 1> 5F 00 00 00` (slot = state field 12) -> type 0x60, see
+ *             nano_decode_cab_settings.
+ *   level etc `09 C0 <field 5 / 6 / 7 = level / high pass / low pass, f32 0..1> 5E 00 00 00`
+ *   phase     `06 C0 40 <1 inverted / 0> 5E 00 00 00`
+ *   mic       `<len> C0 1A <n> { 08 <kind> 12 <IR name> 18 <position 0..5> 22 <microphone> } 5E 00 00 00`:
+ *             the factory IR is picked by name, position and microphone (both from the read).
+ * Scales (Cortex Cloud's readouts, 2026-10-08/09): Level -96 + 108 * n^(1/3.5) dB (0 dB at 0.66212); High pass
+ * 20 + 780 * n^(5/3) Hz; Low pass 1000 + 19000 * n^(5/3) Hz.
+ */
+typedef enum { NANO_CAB_LEVEL = 0, NANO_CAB_HIGH_PASS, NANO_CAB_LOW_PASS, NANO_CAB_PARAMS } nano_cab_param_t;
+#define NANO_CAB_LEVEL_MIN_DB (-96.0f)
+#define NANO_CAB_LEVEL_MAX_DB 12.0f
+#define NANO_CAB_HIGH_PASS_MIN_HZ 20.0f
+#define NANO_CAB_HIGH_PASS_MAX_HZ 800.0f
+#define NANO_CAB_LOW_PASS_MIN_HZ 1000.0f
+#define NANO_CAB_LOW_PASS_MAX_HZ 20000.0f
+#define NANO_CAB_POSITIONS 6 /* Cortex Cloud's 1..6, from the cone's centre to its edge (0..5 on the wire) */
+/* Returns 10, or 0 for slot 0 (state field 12: 1..5, 6 for most presets). */
+size_t nano_build_cab_settings_request(uint8_t *out, size_t cap, uint8_t slot);
+/* Returns 11 (the value is clamped to 0..1), or 0 for an unknown parameter. */
+size_t nano_build_cab_setting(uint8_t *out, size_t cap, nano_cab_param_t param, float normalized);
+/* Returns 8. */
+size_t nano_build_cab_phase(uint8_t *out, size_t cap, bool inverted);
+/* `kind` and `ir_name` as the read reported them (nano_cab_settings_t). Returns bytes written, 0 when too long. */
+size_t nano_build_cab_mic(uint8_t *out, size_t cap, uint32_t kind, const char *ir_name, uint8_t position, const char *mic);
+/* The pedal's 0..1 as dB (Level) or Hz (filters), and back (clamped). */
+float nano_cab_value(nano_cab_param_t param, float normalized);
+float nano_cab_normalized(nano_cab_param_t param, float value);
 
 /*
  * Read a preset's expression pedal assignments (Cortex Cloud's request on its Expression Pedal

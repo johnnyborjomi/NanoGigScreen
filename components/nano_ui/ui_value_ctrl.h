@@ -51,13 +51,17 @@ typedef struct {
 
 typedef struct ui_value_ctrl ui_value_ctrl_t;
 
-/* Build the control across `parent` from `y` down (UI_VALUE_CTRL_HEIGHT tall). `cfg` is copied. */
+/* Build the control across `parent` (its width) from `y` down (UI_VALUE_CTRL_HEIGHT tall). `cfg` is copied. */
 #define UI_VALUE_CTRL_HEIGHT 130
 ui_value_ctrl_t *ui_value_ctrl_create(lv_obj_t *parent, int32_t y, const ui_value_ctrl_cfg_t *cfg);
 
 /* The value as the pedal reports it (-1 = unknown: shown as "-", controls off). `owner` identifies
  * what it belongs to (the preset): a report for a different owner always shows at once. */
 void ui_value_ctrl_report(ui_value_ctrl_t *c, int raw, int owner);
+
+/* Like ui_value_ctrl_report, but shown even while a change made here holds (the pedal's answer to a read
+ * made after that change). Leaves a finger on the slider alone. */
+void ui_value_ctrl_set(ui_value_ctrl_t *c, int raw, int owner);
 
 /* The value shown (-1 = unknown). */
 int ui_value_ctrl_value(const ui_value_ctrl_t *c);

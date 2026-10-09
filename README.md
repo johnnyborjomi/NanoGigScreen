@@ -12,6 +12,9 @@ and shows, with no phone on the floor:
 - preset switching with the ◀ ▶ buttons beside the name
 - preset rename: long-press the preset name (or a row in the presets list) for a keyboard; the pedal
   stores the new name at once
+- capture and IR pages: long-press the capture or IR line; tabs in the header switch between them. Capture:
+  volume. IR: Level, High pass, Low pass and phase, plus microphone and position for factory IRs, on Cortex
+  Cloud's scales. Live edits like Cortex Cloud's (EXIT on the pedal reverts them, the screen follows)
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
 - menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),
   settings (presets per bank and label style, outputs 1/2 mute, expression indicators; page 2:
@@ -181,4 +184,4 @@ Things to check on the bench, in order:
 ## License
 
 MIT, like NanoGig. Protocol knowledge builds on choldy/nano-cortex-web-editor (MIT),
-rixrix/deskop-nano-cortex (Apache-2.0) and DrD85/nano-cortex-controller (MIT: the preset rename). Not affiliated with Neural DSP.
+rixrix/deskop-nano-cortex (Apache-2.0) and DrD85/nano-cortex-controller (MIT: the preset rename, IR settings read and level / filter writes). Not affiliated with Neural DSP.

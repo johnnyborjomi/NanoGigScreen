@@ -137,6 +137,8 @@ bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out)
     /* Field 54 is an inverted bypass flag; absent = gate on. */
     out->gate_on = nano_first_varint(d, plen, 54, 0) == 0;
     out->cab_on = nano_has_field(d, plen, 12);
+    int64_t cab = nano_first_varint(d, plen, 12, 0);
+    out->cab_slot = cab > 0 && cab < 256 ? (uint8_t)cab : 0;
     out->capture_on = nano_first_varint(d, plen, 11, 0) > 0;
     int64_t vol = nano_first_varint(d, plen, 44, -1);
     out->capture_volume = vol < 0 ? -1 : vol > 255 ? 255 : (int16_t)vol;
@@ -156,6 +158,42 @@ bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out)
     float ref;
     if (nano_first_fixed32_float(d, plen, 46, &ref) && ref >= 400.0f && ref <= 480.0f) out->tuner_reference_hz = ref;
     return true;
+}
+
+/* ---- IR settings ------------------------------------------------------- */
+
+bool nano_decode_cab_settings(const uint8_t *d, size_t len, nano_cab_settings_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    bool ir = false;
+    nano_proto_iter_t it;
+    nano_field_t f;
+    nano_proto_iter_init(&it, d, len);
+    while (nano_proto_next(&it, &f)) {
+        if (f.wire != NANO_WIRE_BYTES) continue;
+        if ((f.field == 5 || f.field == 6) && !ir) {
+            ir = true;
+            out->factory = f.field == 5;
+            out->kind = (uint32_t)nano_first_varint(f.raw, f.len, 1, 0);
+            nano_first_string(f.raw, f.len, 2, out->ir_name, sizeof(out->ir_name));
+            int64_t pos = nano_first_varint(f.raw, f.len, 3, 0);
+            out->position = pos >= 0 && pos < 256 ? (uint8_t)pos : 0;
+            nano_first_string(f.raw, f.len, 4, out->mic, sizeof(out->mic));
+        } else if (f.field == 7 && out->mic_count < NANO_CAB_MICS_MAX && f.len && f.len < NANO_CAB_MIC_CAP) {
+            memcpy(out->mics[out->mic_count], f.raw, f.len);
+            out->mics[out->mic_count][f.len] = '\0';
+            out->mic_count++;
+        } else if (f.field == 8) {
+            nano_proto_iter_t in;
+            nano_field_t g;
+            nano_proto_iter_init(&in, f.raw, f.len);
+            while (nano_proto_next(&in, &g)) {
+                if (g.wire == NANO_WIRE_FIXED32 && g.field >= 1 && g.field <= 3) memcpy(&out->values[g.field - 1], g.raw, 4);
+                else if (g.wire == NANO_WIRE_VARINT && g.field == 4) out->phase_inverted = g.value != 0;
+            }
+        }
+    }
+    return ir;
 }
 
 /* ---- events ------------------------------------------------------------ */

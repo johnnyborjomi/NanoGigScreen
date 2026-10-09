@@ -52,6 +52,7 @@ typedef struct {
     bool fx_on[NANO_FX_SLOT_COUNT];    /* pre1, pre2, post1, post2, post3 */
     bool gate_on;                      /* field 54 absent = on (inverted flag) */
     bool cab_on;                       /* field 12 present */
+    uint8_t cab_slot;                  /* field 12 as sent: the IR slot 1..5 (DrD85; 6 in one of our dumps), 0 = absent */
     bool capture_on;                   /* field 11 > 0 (position in the bank; 0 / absent = bypassed) */
     char capture_name[NANO_NAME_CAP];
     int16_t capture_volume;            /* field 44, raw 0..255 (127 = the default level); -1 when absent */
@@ -67,6 +68,30 @@ typedef struct {
 
 /* Decode a state dump body. False when nothing recognisable is present. */
 bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out);
+
+/*
+ * IR settings reply (type 0x60, see nano_build_cab_settings_request), Cortex Cloud's IR loader (2026-10-09):
+ *   5 { 1: kind, 2: IR name, 3: position 0..5, 4: microphone, 5: IR name }  a factory IR, or
+ *   6 { 1: kind, 2: IR name }                                               one of the user's
+ *   7: microphone (repeated)  the ones this IR offers
+ *   8 { 1: level, 2: high pass, 3: low pass, 4: phase inverted }  f32 0..1 (a value of 0 is left out), varint
+ */
+#define NANO_CAB_MICS_MAX 8
+#define NANO_CAB_NAME_CAP 48
+#define NANO_CAB_MIC_CAP 24
+typedef struct {
+    float values[3];                   /* the pedal's 0..1 per nano_cab_param_t */
+    bool factory;                      /* field 5: microphone and position can be chosen */
+    uint32_t kind;
+    char ir_name[NANO_CAB_NAME_CAP];
+    uint8_t position;                  /* 0..5 */
+    char mic[NANO_CAB_MIC_CAP];
+    char mics[NANO_CAB_MICS_MAX][NANO_CAB_MIC_CAP];
+    uint8_t mic_count;
+    bool phase_inverted;
+} nano_cab_settings_t;
+/* Payload without the trailer. False when it describes no IR. */
+bool nano_decode_cab_settings(const uint8_t *payload, size_t len, nano_cab_settings_t *out);
 
 typedef enum {
     NANO_EV_UNKNOWN = 0,
