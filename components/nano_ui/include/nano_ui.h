@@ -186,6 +186,11 @@ void nano_ui_update_status(nano_update_state_t state, const char *text, int perc
 /* Update view: show the network picker ("Searching" while `scanning`, else the list). */
 void nano_ui_update_show_networks(const nano_ui_network_t *networks, int count, bool scanning);
 
+/* Previews and tests: the first visible object showing `text` (a button's label gives the button), and the
+ * keyboard showing, or NULL. */
+lv_obj_t *nano_ui_find(const char *text);
+lv_obj_t *nano_ui_find_keyboard(void);
+
 #ifdef __cplusplus
 }
 #endif

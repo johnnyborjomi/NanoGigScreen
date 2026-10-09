@@ -337,18 +337,9 @@ int main(int argc, char **argv)
         nano_ui_set_ir_settings(&ir, lng.active_preset, true);
         nano_ui_ir_page(2);
         render(50);
-        {
-            lv_obj_t *stack[256]; int sp = 0, nb = 0; lv_obj_t *plus1k = NULL;
-            stack[sp++] = lv_screen_active();
-            while (sp) {
-                lv_obj_t *x = stack[--sp];
-                if (lv_obj_get_child_count(x) == 1 && lv_obj_check_type(lv_obj_get_child(x, 0), &lv_label_class) && strcmp(lv_label_get_text(lv_obj_get_child(x, 0)), "+1 kHz") == 0 && !lv_obj_has_flag(x, LV_OBJ_FLAG_HIDDEN)) plus1k = x;
-                for (uint32_t i = 0; i < lv_obj_get_child_count(x) && sp < 256; i++) stack[sp++] = lv_obj_get_child(x, i);
-                nb++;
-            }
-            printf("objects %d, +1 kHz button %p\n", nb, (void *)plus1k);
-            if (plus1k) lv_obj_send_event(plus1k, LV_EVENT_CLICKED, NULL);
-        }
+        lv_obj_t *plus1k = nano_ui_find("+1 kHz");
+        printf("+1 kHz button %p\n", (void *)plus1k);
+        if (plus1k) lv_obj_send_event(plus1k, LV_EVENT_CLICKED, NULL);
         render(50);
         save(dir, "9t-ir-lp-stepped");
         nano_ui_set_ir_settings(&ir, lng.active_preset, true);
@@ -363,12 +354,7 @@ int main(int argc, char **argv)
         render(200);
         save(dir, "9k-rename-refused");
         /* The keyboard's other pages. */
-        lv_obj_t *kb = NULL;
-        for (lv_obj_t *o = lv_screen_active(); o && !kb;) {
-            /* depth-first search for the keyboard */
-            lv_obj_t *stack[64]; int sp = 0; stack[sp++] = o; o = NULL;
-            while (sp && !kb) { lv_obj_t *x = stack[--sp]; if (lv_obj_check_type(x, &lv_keyboard_class)) kb = x; for (uint32_t i = 0; i < lv_obj_get_child_count(x) && sp < 64; i++) stack[sp++] = lv_obj_get_child(x, i); }
-        }
+        lv_obj_t *kb = nano_ui_find_keyboard();
         if (kb) {
             lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_SPECIAL);
             render(200);
@@ -413,9 +399,8 @@ int main(int argc, char **argv)
         render(200);
         save(dir, "10f-update-networks");
         /* tap the first (secured) network: the password page with its keyboard */
-        lv_obj_t *update = lv_obj_get_child(lv_screen_active(), -1);
-        lv_obj_t *list = lv_obj_get_child(lv_obj_get_child(update, -2), -1);
-        lv_obj_send_event(lv_obj_get_child(list, 0), LV_EVENT_CLICKED, NULL);
+        lv_obj_t *studio = nano_ui_find("Studio 5G");
+        if (studio) lv_obj_send_event(studio, LV_EVENT_CLICKED, NULL);
         render(200);
         save(dir, "10g-update-password");
     }

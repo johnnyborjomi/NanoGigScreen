@@ -38,20 +38,52 @@ lv_obj_t *ui_button(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h
     lv_obj_set_clickable(b, true);
     lv_obj_set_style_bg_color(b, lv_color_hex(fg), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(b, LV_OPA_30, LV_STATE_PRESSED);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, user);
+    if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, user);
     lv_obj_t *l = ui_label(b, font, fg);
     lv_label_set_text(l, text);
     lv_obj_center(l);
     return b;
 }
 
-void ui_on_pressed(lv_event_t *e)
+/* The input device's own event list sees every press, whatever object takes it. */
+static void on_press(lv_event_t *e)
 {
-    lv_indev_t *indev = lv_event_get_indev(e);
-    if (!indev) return;
+    lv_indev_t *indev = lv_event_get_current_target(e);
     lv_point_t p;
     lv_indev_get_point(indev, &p);
     printf("touch press x=%d y=%d\n", (int)p.x, (int)p.y);
+}
+
+void ui_log_presses(lv_display_t *disp)
+{
+    for (lv_indev_t *i = lv_indev_get_next(NULL); i; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_display(i) == disp && lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER) lv_indev_add_event_cb(i, on_press, LV_EVENT_PRESSED, NULL);
+    }
+}
+
+lv_obj_t *ui_find_text(lv_obj_t *root, const char *text)
+{
+    if (lv_obj_is_hidden(root)) return NULL;
+    if (lv_obj_check_type(root, &lv_label_class) && strcmp(lv_label_get_text(root), text) == 0) {
+        lv_obj_t *parent = lv_obj_get_parent(root);
+        return parent && lv_obj_is_clickable(parent) ? parent : root;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(root); i++) {
+        lv_obj_t *hit = ui_find_text(lv_obj_get_child(root, i), text);
+        if (hit) return hit;
+    }
+    return NULL;
+}
+
+lv_obj_t *ui_find_class(lv_obj_t *root, const lv_obj_class_t *cls)
+{
+    if (lv_obj_is_hidden(root)) return NULL;
+    if (lv_obj_check_type(root, cls)) return root;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(root); i++) {
+        lv_obj_t *hit = ui_find_class(lv_obj_get_child(root, i), cls);
+        if (hit) return hit;
+    }
+    return NULL;
 }
 
 /* The caret: LVGL 9.6 draws no border on a text area's cursor part, so a thin bar of our own sits
@@ -208,6 +240,5 @@ lv_obj_t *ui_keyboard(lv_obj_t *parent, int32_t h, lv_obj_t *ta)
     lv_obj_set_style_border_width(kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_shadow_width(kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_radius(kb, 5, LV_PART_ITEMS);
-    lv_obj_add_event_cb(kb, ui_on_pressed, LV_EVENT_PRESSED, NULL);
     return kb;
 }

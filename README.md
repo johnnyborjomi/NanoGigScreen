@@ -57,14 +57,19 @@ components/
   nano_ota/              update mode: Wi-Fi join (NVS credentials), HTTPS image check + install, rollback
   cyd_board/             ESP32-2432S028 bring-up: SPI panel, XPT2046 touch, backlight, LED, LVGL port
   nano_ui/               LVGL 9 gig screen
-    nano_ui.c            the views (gig, menu, settings, presets, capture, tuner, tempo, connect, update)
-    ui_common.h/.c       palette, screen size, fonts, label / box / button constructors
+    nano_ui.c            page switching (one ui_page_t per view, ui_internal.h), create, shared setters
+    page_*.c             one page each: main (the gig view), connect, menu, settings, presets,
+                         source (Capture / IR tabs; ir_tab.c), rename, tuner, tempo, update
+    ui_widgets.h/.c      overlay with title bar, pager column, settings rows, status line
+    ui_common.h/.c       palette, screen size, fonts, label / box / button / keyboard constructors
     ui_value_ctrl.h/.c   reusable parameter control: value, slider, fine / coarse steps, double tap reset
     ui_text_edit.h/.c    reusable text entry: one-line field, keyboard, length / custom checks, saving state
 docs/HARDWARE.md         board facts, pinout, mounting notes
 ```
 
-New pages build on `ui_common.h`. A new adjustable pedal parameter is a `ui_value_ctrl_cfg_t`:
+A new page is a `page_*.c` with a `ui_page_t` (build, destroy, enter, leave; see `ui_internal.h`)
+registered in `nano_ui.c`; pages are built on open and freed on close unless marked `keep`. Pages
+build on `ui_widgets.h` and `ui_common.h`. A new adjustable pedal parameter is a `ui_value_ctrl_cfg_t`:
 its raw range, the mapping to the slider and the readout, the step sizes and a change callback
 (see the capture volume in `nano_ui.c`). A text the pedal stores is a `ui_text_edit_cfg_t` (see the
 preset rename). Both are freed with the page that holds them.
