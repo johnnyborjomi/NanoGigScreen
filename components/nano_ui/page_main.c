@@ -114,6 +114,8 @@ static void on_gate_clicked(lv_event_t *e)
     if (g_ui.cb.on_toggle_gate) g_ui.cb.on_toggle_gate(s.gate_on);
 }
 
+static void on_gate_long(lv_event_t *e) { (void)e; ui_go(NANO_VIEW_GATE); }
+
 static void on_tile_clicked(lv_event_t *e)
 {
     uint8_t slot = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
@@ -191,7 +193,10 @@ static void build_lines(lv_obj_t *root)
 {
     /* Gate button, then the capture / IR lines, then LIST mirroring the gate at the right edge. */
     const int32_t btn_y = LINES_Y + (LINES_H - GATE_H) / 2;
-    w.gate = ui_button(root, EDGE_X, btn_y, GATE_W, GATE_H, "GATE", &montserrat_medium_10, C_OFF, C_TEXT, on_gate_clicked, NULL);
+    /* A tap toggles, a hold opens the gate page. */
+    w.gate = ui_button(root, EDGE_X, btn_y, GATE_W, GATE_H, "GATE", &montserrat_medium_10, C_OFF, C_TEXT, NULL, NULL);
+    lv_obj_add_event_cb(w.gate, on_gate_clicked, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_add_event_cb(w.gate, on_gate_long, LV_EVENT_LONG_PRESSED, NULL);
     lv_obj_set_style_radius(w.gate, 7, 0);
     lv_obj_set_ext_click_area(w.gate, 8);
     w.list_btn = ui_button(root, RIGHT_X - GATE_W, btn_y, GATE_W, GATE_H, "LIST", &montserrat_medium_10, C_OFF, C_TEXT, on_open_presets, NULL);
@@ -475,6 +480,7 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
     ui_line_set(w.ir_dot, w.ir, st->ir_short_name, st->cab_on, "No IR");
     source_from_state(st);
     fx_from_state(st);
+    gate_from_state(st);
     s.gate_on = st->gate_on;
     lv_obj_set_style_bg_color(w.gate, lv_color_hex(st->gate_on ? nano_category_color(NANO_CAT_UTILITY) : C_OFF), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(w.gate, 0), lv_color_hex(st->gate_on ? C_FX_TEXT : C_TEXT), 0);

@@ -8,7 +8,7 @@
 static const char *TAG = "edits";
 
 static struct {
-    int64_t fx_written_us[NANO_FX_SLOT_COUNT], fx_model_written_us[NANO_FX_SLOT_COUNT], gate_written_us, capvol_written_us, ir_written_us;
+    int64_t fx_written_us[NANO_FX_SLOT_COUNT], fx_model_written_us[NANO_FX_SLOT_COUNT], gate_written_us, gate_thr_written_us, capvol_written_us, ir_written_us;
     uint8_t ir_slot;   /* the IR slot `ir_preset` last showed while on (state field 12): where "on" goes back to */
     int ir_preset;
 } s = { .ir_preset = -1 };
@@ -52,6 +52,18 @@ void block_edits_toggle_gate(bool currently_on)
     g_app.state.gate_on = !currently_on;
     s.gate_written_us = app_now_us();
     ui_mark(UI_STATE);
+    link_schedule_state(CONFIRM_MS);
+}
+
+/* Gate threshold, raw 0..255 (Cortex Cloud's write, 2026-10-10). The gate page already shows the value. */
+void block_edits_set_gate_threshold(uint8_t raw)
+{
+    if (!g_app.link_ready || !g_app.state_valid) return;
+    uint8_t f[NANO_FRAME_MAX];
+    if (!app_send(f, nano_build_gate_threshold(f, sizeof(f), raw))) return;
+    ESP_LOGI(TAG, "-> gate threshold %u", raw);
+    g_app.state.gate_threshold = raw;
+    s.gate_thr_written_us = app_now_us();
     link_schedule_state(CONFIRM_MS);
 }
 
@@ -138,6 +150,10 @@ void block_edits_filter(nano_state_t *dump, int64_t requested_us)
     }
     if (s.gate_written_us > requested_us) {
         dump->gate_on = shown->gate_on;
+        held = true;
+    }
+    if (s.gate_thr_written_us > requested_us && dump->active_preset == shown->active_preset) {
+        dump->gate_threshold = shown->gate_threshold;
         held = true;
     }
     if (s.capvol_written_us > requested_us && dump->active_preset == shown->active_preset) {

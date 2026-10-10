@@ -14,10 +14,12 @@ and shows, with no phone on the floor:
   stores the new name at once
 - capture and IR pages: long-press the capture or IR line; tabs in the header switch between them. Capture:
   volume. IR: on / off, phase and ◀ ▶ through the pedal's IR list (the preset's saved IR in teal), Level,
-  High pass, Low pass, plus microphone and position for factory IRs, on Cortex Cloud's scales. Hold the IR
-  name for every IR on the pedal (User / Factory tabs, five a page): tap one to load it into the preset; folders of
-  our own (kept on the screen: + Folder, hold an IR to move it, rename / delete in a folder). Live edits
+  High pass, Low pass, plus microphone and position for factory IRs, on Cortex Cloud's scales. Hold the capture
+  or IR name for every capture / IR on the pedal (User / Factory tabs, five a page): tap one to load it into the
+  preset (Cortex Cloud's preview; its "Use", which rewrites a bank slot other presets share, is left out); folders
+  of our own (kept on the screen: + Folder, hold one to move it, rename / delete in a folder). Live edits
   like Cortex Cloud's (EXIT on the pedal reverts them, the screen follows)
+- gate: tap GATE for on / off, hold it for the threshold (0..100 % in Cortex Cloud's 1/255 steps)
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
 - FX editor: hold a tile. Page 1 shows the type in its colour (hold it: the types the slot takes, as tiles), the
   model (hold it: that type's models) and on / off; the next pages hold the parameters, three a page (sliders with

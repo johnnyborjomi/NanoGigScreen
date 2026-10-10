@@ -8,7 +8,7 @@
 #include "block_edits.h"
 #include "esp_log.h"
 #include "expression.h"
-#include "ir_library.h"
+#include "library.h"
 #include "link.h"
 #include "nano_assembler.h"
 #include "nano_proto.h"
@@ -44,7 +44,7 @@ static void log_state_fields(const uint8_t *body, size_t len)
     nano_proto_iter_init(&it, body, len);
     while (nano_proto_next(&it, &f) && k < sizeof(line) - 24) {
         if (f.wire == NANO_WIRE_VARINT) k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%llu ", (unsigned)f.field, (unsigned long long)f.value);
-        else if (f.wire == NANO_WIRE_FIXED32) k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%.1ff ", (unsigned)f.field, (double)nano_field_f32(&f));
+        else if (f.wire == NANO_WIRE_FIXED32) k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=%.3ff ", (unsigned)f.field, (double)nano_field_f32(&f));
         else k += (size_t)snprintf(line + k, sizeof(line) - k, "%u=[%u] ", (unsigned)f.field, (unsigned)f.len);
     }
     ESP_LOGI(TAG, "   fields: %s", line);
@@ -175,7 +175,7 @@ static void on_message(void *ctx, const uint8_t *body, size_t len, int packets, 
     (void)ctx;
     int msg_type;
     size_t plen = nano_split_trailer(body, len, &msg_type);
-    if (remote_pages_on_reply(msg_type, body, plen) || ir_library_on_reply(msg_type, body, plen)) return;
+    if (remote_pages_on_reply(msg_type, body, plen) || library_on_reply(msg_type, body, plen)) return;
     if (packets > 1 || msg_type == NANO_MSG_DUMP) {
         if (!complete) ESP_LOGW(TAG, "unterminated %u-byte message flushed by timeout", (unsigned)len);
         /* Only a reply to our own metadata request can be metadata; the decoder also checks size / records. */

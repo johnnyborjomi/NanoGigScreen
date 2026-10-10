@@ -67,7 +67,7 @@ enum {
     UI_RENAME = 1u << 10,     /* the rename page's answer (rename.c) */
     UI_TUNER_MUTE = 1u << 11, /* tuner.c */
     UI_ROTATION = 1u << 12,   /* settings.c */
-    UI_IR_LIBRARY = 1u << 13, /* the IR list page's list (ir_library.c) */
+    UI_LIBRARY = 1u << 13,    /* the capture / IR list page's list (library.c) */
     UI_IR_FOLDERS = 1u << 14, /* the IR list page's folders (ir_folder_store.c) */
 };
 /* Parts of the old link that must not reach the greyed-out screen after a drop. */

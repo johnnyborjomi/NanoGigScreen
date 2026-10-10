@@ -118,6 +118,7 @@ bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out)
     if (msg_type != NANO_MSG_DUMP && msg_type != -1) return false;
     out->gate_on = true;          /* field 54 is an inverted bypass flag: absent = on */
     out->capture_volume = -1;
+    out->gate_threshold = 0;      /* field 53: a zero is left out */
     bool has_capture = false, has_ir = false, has_amp = false;
     uint64_t seen = 0;            /* fields below 64 already taken */
     nano_proto_iter_t it;
@@ -183,6 +184,12 @@ bool nano_decode_state(const uint8_t *body, size_t len, nano_state_t *out)
             break;
         case 48: case 49: case 50: case 51: case 52:
             model_id_hex(&f, &out->fx[f.field - 48]);
+            break;
+        case 53: /* gate threshold, f32 0..1 (as the write's raw / 255) */
+            if (f.wire == NANO_WIRE_FIXED32) {
+                float n = nano_field_f32(&f);
+                out->gate_threshold = n <= 0 ? 0 : n >= 1 ? 255 : (int16_t)(n * 255.0f + 0.5f);
+            }
             break;
         case 54:
             if (varint) out->gate_on = f.value == 0;
@@ -254,9 +261,25 @@ int nano_decode_fx_params(const uint8_t *d, size_t len, float *values, int max)
 
 /* ---- IR library ---------------------------------------------------------- */
 
-size_t nano_decode_ir_library(const uint8_t *d, size_t len, nano_ir_library_t *out, size_t cap)
+/* An item's name: a capture is a record {1: hash, 2: name}, an IR just its name. */
+static bool library_item(const nano_field_t *f, bool capture, const uint8_t **name, size_t *n)
 {
-    static const uint32_t FIELDS[2] = { 4, 6 }; /* NANO_IR_FACTORY, NANO_IR_USER */
+    if (!capture) {
+        *name = f->raw;
+        *n = f->len;
+        return true;
+    }
+    nano_field_t g;
+    if (!nano_get_field(f->raw, f->len, 2, &g) || g.wire != NANO_WIRE_BYTES) return false;
+    *name = g.raw;
+    *n = g.len;
+    return true;
+}
+
+size_t nano_decode_library(const uint8_t *d, size_t len, int what, nano_library_t *out, size_t cap)
+{
+    bool capture = what == NANO_LIB_CAPTURES;
+    const uint32_t fields[2] = { capture ? 3 : 4, capture ? 5 : 6 }; /* NANO_IR_FACTORY, NANO_IR_USER */
     uint32_t count[2] = { 0 }, size = 0;
     /* One pass per list: the factory names first whatever the order on the wire. */
     for (int list = 0; list < 2; list++) {
@@ -264,13 +287,15 @@ size_t nano_decode_ir_library(const uint8_t *d, size_t len, nano_ir_library_t *o
         nano_field_t f;
         nano_proto_iter_init(&it, d, len);
         while (nano_proto_next(&it, &f)) {
-            if (f.wire != NANO_WIRE_BYTES || f.field != FIELDS[list]) continue;
+            const uint8_t *name;
+            size_t n;
+            if (f.wire != NANO_WIRE_BYTES || f.field != fields[list] || !library_item(&f, capture, &name, &n)) continue;
             size_t at = sizeof(*out) + size;
-            if (out && at + f.len + 1 <= cap) {
-                memcpy(out->names + size, f.raw, f.len);
-                out->names[size + f.len] = '\0';
+            if (out && at + n + 1 <= cap) {
+                memcpy(out->names + size, name, n);
+                out->names[size + n] = '\0';
             }
-            size += (uint32_t)f.len + 1;
+            size += (uint32_t)n + 1;
             count[list]++;
         }
     }
@@ -284,7 +309,7 @@ size_t nano_decode_ir_library(const uint8_t *d, size_t len, nano_ir_library_t *o
     return need;
 }
 
-const char *nano_ir_library_name(const nano_ir_library_t *lib, int list, int index)
+const char *nano_library_name(const nano_library_t *lib, int list, int index)
 {
     if (!lib || list < 0 || list > 1 || index < 0 || index >= lib->count[list]) return NULL;
     int skip = (list == NANO_IR_USER ? lib->count[0] : 0) + index;

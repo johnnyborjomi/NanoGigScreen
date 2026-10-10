@@ -15,6 +15,8 @@ void block_edits_toggle_fx(uint8_t slot, bool currently_on);
 /* Another model in FX slot `slot` (a type from nano_fx_params.h; the model's defaults, as in Cortex Cloud). */
 void block_edits_set_fx_model(uint8_t slot, uint32_t type);
 void block_edits_toggle_gate(bool currently_on);
+/* Gate threshold, raw 0..255 (the gate page already shows it). */
+void block_edits_set_gate_threshold(uint8_t raw);
 void block_edits_set_capture_volume(uint8_t raw);
 /* IR off, or back on (the slot the preset last had). */
 void block_edits_set_ir_on(bool on);

@@ -145,15 +145,78 @@ size_t nano_build_cab_load(uint8_t *out, size_t cap, int list, uint32_t index, c
     return nano_frame_end(&w, NANO_MSG_CAB_SETTING);
 }
 
-size_t nano_build_library_request(uint8_t *out, size_t cap, bool irs_only)
+size_t nano_build_library_request(uint8_t *out, size_t cap, int what)
+{
+    if (!(what & (NANO_LIB_CAPTURES | NANO_LIB_IRS))) return 0;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    if (what & NANO_LIB_CAPTURES) nano_pb_varint(&w, 3, 1); /* factory captures */
+    if (what & NANO_LIB_IRS) nano_pb_varint(&w, 4, 1);      /* factory IRs */
+    if (what & NANO_LIB_CAPTURES) nano_pb_varint(&w, 5, 1); /* user captures */
+    if (what & NANO_LIB_IRS) nano_pb_varint(&w, 6, 1);      /* user IRs */
+    return nano_frame_end(&w, NANO_MSG_LIBRARY_REQUEST);
+}
+
+/* `field` { 1: index, 2: name }: how every load names a library item. */
+static void library_item(nano_pb_writer_t *w, uint32_t field, uint32_t index, const char *name)
+{
+    size_t item = nano_pb_begin(w, field);
+    nano_pb_varint(w, 1, index);
+    nano_pb_text(w, 2, name);
+    nano_pb_end(w, item);
+}
+
+static bool item_ok(int list, const char *name) { return name && name[0] && (list == NANO_IR_FACTORY || list == NANO_IR_USER); }
+
+size_t nano_build_capture_preview(uint8_t *out, size_t cap, int list, uint32_t index, const char *name)
+{
+    if (!item_ok(list, name)) return 0;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    library_item(&w, list == NANO_IR_FACTORY ? 3 : 4, index, name);
+    nano_pb_varint(&w, 8, 1);
+    return nano_frame_end(&w, NANO_MSG_CAPTURE_PREVIEW);
+}
+
+static size_t slot_load(uint8_t *out, size_t cap, uint8_t slot, int list, uint32_t index, const char *name, int type)
 {
     nano_pb_writer_t w;
     nano_frame_begin(&w, out, cap);
-    if (!irs_only) nano_pb_varint(&w, 3, 1); /* factory captures */
-    nano_pb_varint(&w, 4, 1);                /* factory IRs */
-    if (!irs_only) nano_pb_varint(&w, 5, 1); /* user captures */
-    nano_pb_varint(&w, 6, 1);                /* user IRs */
-    return nano_frame_end(&w, NANO_MSG_LIBRARY_REQUEST);
+    nano_pb_varint(&w, 3, slot);
+    library_item(&w, list == NANO_IR_FACTORY ? 4 : 5, index, name);
+    return nano_frame_end(&w, type);
+}
+
+size_t nano_build_capture_slot_load(uint8_t *out, size_t cap, uint8_t slot, int list, uint32_t index, const char *name)
+{
+    if (!item_ok(list, name) || slot >= NANO_CAPTURE_SLOTS) return 0;
+    return slot_load(out, cap, slot, list, index, name, NANO_MSG_CAPTURE_SLOT_LOAD);
+}
+
+size_t nano_build_cab_slot_load(uint8_t *out, size_t cap, uint8_t slot, int list, uint32_t index, const char *name)
+{
+    if (!item_ok(list, name) || slot >= NANO_IR_SLOTS) return 0;
+    return slot_load(out, cap, slot, list, index, name, NANO_MSG_CAB_SLOT_LOAD);
+}
+
+size_t nano_build_capture_select(uint8_t *out, size_t cap, uint8_t slot)
+{
+    if (slot > NANO_CAPTURE_SLOTS) return 0;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    nano_pb_varint(&w, 3, 1); /* selector 1: the capture, by its slot */
+    nano_pb_varint(&w, 4, slot);
+    return nano_frame_end(&w, NANO_MSG_ENCODER);
+}
+
+size_t nano_build_gate_threshold(uint8_t *out, size_t cap, uint8_t raw)
+{
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    nano_pb_varint(&w, 3, 11); /* selector 11: gate threshold */
+    nano_pb_varint(&w, 4, raw);
+    nano_pb_varint(&w, 5, 0);
+    return nano_frame_end(&w, NANO_MSG_KNOB);
 }
 
 size_t nano_build_cab_settings_request(uint8_t *out, size_t cap, uint8_t slot)

@@ -1,10 +1,11 @@
 /*
- * IR folders: our own grouping of the pedal's IRs (Cortex Cloud has none; the pedal knows nothing of them). A folder
- * belongs to one list (user or factory IRs), an IR sits in at most one folder or at the top of its list. IRs are
- * remembered by a hash of list + name, so a folder keeps its IRs when IRs are added or removed in Cortex Cloud (the
- * pedal's index shifts, the name does not). Fixed size (~1 KB), stored as one blob by the app.
+ * Folders: our own grouping of the pedal's IRs and captures (Cortex Cloud has none; the pedal knows nothing of them).
+ * A folder belongs to one list (NANO_FOLDER_LIST: user or factory IRs or captures), an item sits in at most one
+ * folder or at the top of its list. Items are remembered by a hash of list + name, so a folder keeps them when items
+ * are added or removed in Cortex Cloud (the pedal's index shifts, the name does not). Fixed size (~1 KB), stored as
+ * one blob by the app; IRs and captures share its 16 folders and 160 filed items.
  *
- * The app owns the folders and applies every change (nano_ui's on_ir_folder_edit); the IR list page shows a copy.
+ * The app owns the folders and applies every change (nano_ui's on_ir_folder_edit); the list page shows a copy.
  */
 #ifndef NANO_IR_FOLDERS_H
 #define NANO_IR_FOLDERS_H
@@ -21,10 +22,13 @@ extern "C" {
 #define NANO_IR_FOLDER_NAME_MAX 16
 #define NANO_IR_FILED_MAX 160
 #define NANO_IR_NO_FOLDER 0      /* folder ids are 1..255 */
+/* The lists folders belong to: IRs 0 / 1 (NANO_IR_FACTORY / NANO_IR_USER, as before captures had folders), captures
+ * 2 / 3. `source` = nano_source_t. */
+#define NANO_FOLDER_LIST(source, list) ((source) == 0 ? 2 + (list) : (list))
 
 typedef struct {
     uint8_t id;                  /* stable: what the filed IRs point at */
-    uint8_t list;                /* NANO_IR_FACTORY / NANO_IR_USER */
+    uint8_t list;                /* NANO_FOLDER_LIST */
     char name[NANO_IR_FOLDER_NAME_MAX + 1];
 } nano_ir_folder_t;
 

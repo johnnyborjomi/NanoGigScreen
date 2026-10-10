@@ -132,6 +132,9 @@ static void test_state_single(void)
     CHECK(s.capture_on);
     CHECK(s.amp[0] == 154);
     CHECK(s.capture_volume == 144); /* field 44 */
+    nano_field_t gate;
+    CHECK(nano_get_field(pkt + 2, n - 2, 53, &gate) && gate.wire == NANO_WIRE_FIXED32); /* gate threshold, f32 0..1 */
+    CHECK(s.gate_threshold == (int)(nano_field_f32(&gate) * 255.0f + 0.5f));
     CHECK_STR(s.capture_name, "CA John's Ch1 1");
     CHECK_STR(s.ir_short_name, "110 US PRN C10R");
     CHECK_STR(s.firmware, "2.2.1");
@@ -430,20 +433,42 @@ static void test_labels_and_models(void)
         CHECK(nano_cab_normalized(NANO_CAB_LEVEL, -200) == 0 && nano_cab_normalized(NANO_CAB_LOW_PASS, 30000) == 1);
         /* Library request, byte-exact against Cortex Cloud (snoop 2026-10-09); the IR names only. */
         const uint8_t lib_req[] = { 0x0C, 0xC0, 0x18, 0x01, 0x20, 0x01, 0x28, 0x01, 0x30, 0x01, 0x4C, 0x00, 0x00, 0x00 };
-        CHECK(nano_build_library_request(f, sizeof(f), false) == sizeof(lib_req) && memcmp(f, lib_req, sizeof(lib_req)) == 0);
+        CHECK(nano_build_library_request(f, sizeof(f), NANO_LIB_CAPTURES | NANO_LIB_IRS) == sizeof(lib_req) && memcmp(f, lib_req, sizeof(lib_req)) == 0);
         const uint8_t lib_irs[] = { 0x08, 0xC0, 0x20, 0x01, 0x30, 0x01, 0x4C, 0x00, 0x00, 0x00 };
-        CHECK(nano_build_library_request(f, sizeof(f), true) == sizeof(lib_irs) && memcmp(f, lib_irs, sizeof(lib_irs)) == 0);
+        CHECK(nano_build_library_request(f, sizeof(f), NANO_LIB_IRS) == sizeof(lib_irs) && memcmp(f, lib_irs, sizeof(lib_irs)) == 0);
         /* Library reply: a capture record, user and factory IR names out of order; factory first after decoding. */
         const uint8_t lib[] = { 0x1A, 0x03, 0x12, 0x01, 'C', 0x32, 0x02, 'U', '0', 0x22, 0x02, 'F', '0', 0x32, 0x02, 'U', '1', 0x22, 0x00 };
-        size_t need = nano_decode_ir_library(lib, sizeof(lib), NULL, 0);
-        CHECK(need == sizeof(nano_ir_library_t) + 3 + 1 + 3 + 3);
+        size_t need = nano_decode_library(lib, sizeof(lib), NANO_LIB_IRS, NULL, 0);
+        CHECK(need == sizeof(nano_library_t) + 3 + 1 + 3 + 3);
         uint8_t lib_buf[64] __attribute__((aligned(4)));
-        nano_ir_library_t *irs = (nano_ir_library_t *)lib_buf;
-        CHECK(nano_decode_ir_library(lib, sizeof(lib), irs, sizeof(lib_buf)) == need);
+        nano_library_t *irs = (nano_library_t *)lib_buf;
+        CHECK(nano_decode_library(lib, sizeof(lib), NANO_LIB_IRS, irs, sizeof(lib_buf)) == need);
         CHECK(irs->count[NANO_IR_FACTORY] == 2 && irs->count[NANO_IR_USER] == 2);
-        CHECK(strcmp(nano_ir_library_name(irs, NANO_IR_FACTORY, 0), "F0") == 0 && strcmp(nano_ir_library_name(irs, NANO_IR_FACTORY, 1), "") == 0);
-        CHECK(strcmp(nano_ir_library_name(irs, NANO_IR_USER, 1), "U1") == 0 && nano_ir_library_name(irs, NANO_IR_USER, 2) == NULL);
-        CHECK(nano_decode_ir_library(lib, 5, NULL, 0) == 0); /* the capture alone */
+        CHECK(strcmp(nano_library_name(irs, NANO_IR_FACTORY, 0), "F0") == 0 && strcmp(nano_library_name(irs, NANO_IR_FACTORY, 1), "") == 0);
+        CHECK(strcmp(nano_library_name(irs, NANO_IR_USER, 1), "U1") == 0 && nano_library_name(irs, NANO_IR_USER, 2) == NULL);
+        CHECK(nano_decode_library(lib, 5, NANO_LIB_IRS, NULL, 0) == 0); /* the capture alone */
+        CHECK(nano_decode_library(lib, sizeof(lib), NANO_LIB_CAPTURES, irs, sizeof(lib_buf)) == sizeof(nano_library_t) + 2);
+        CHECK(irs->count[NANO_IR_FACTORY] == 1 && irs->count[NANO_IR_USER] == 0 && strcmp(nano_library_name(irs, NANO_IR_FACTORY, 0), "C") == 0);
+        const uint8_t cap_only[] = { 0x08, 0xC0, 0x18, 0x01, 0x28, 0x01, 0x4C, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_library_request(f, sizeof(f), NANO_LIB_CAPTURES) == sizeof(cap_only) && memcmp(f, cap_only, sizeof(cap_only)) == 0);
+        CHECK(nano_build_library_request(f, sizeof(f), 0) == 0);
+        /* Preview and use, byte-exact against Cortex Cloud (snoops 2026-10-09 / -10). */
+        uint8_t lf[48];
+        const uint8_t preview[] = { 0x16, 0xC0, 0x1A, 0x0E, 0x08, 0x05, 0x12, 0x0A, 'C', 'o', 'm', 'e', 't', ' ', '6', '0', ' ', '6', 0x40, 0x01,
+                                    0x96, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_capture_preview(lf, sizeof(lf), NANO_IR_FACTORY, 5, "Comet 60 6") == sizeof(preview) && memcmp(lf, preview, sizeof(preview)) == 0);
+        CHECK(nano_build_capture_preview(lf, sizeof(lf), NANO_IR_USER, 5, "Comet 60 6") == sizeof(preview) && lf[2] == 0x22);
+        const uint8_t use[] = { 0x16, 0xC0, 0x18, 0x04, 0x22, 0x0E, 0x08, 0x05, 0x12, 0x0A, 'C', 'o', 'm', 'e', 't', ' ', '6', '0', ' ', '6',
+                                0x50, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_capture_slot_load(lf, sizeof(lf), 4, NANO_IR_FACTORY, 5, "Comet 60 6") == sizeof(use) && memcmp(lf, use, sizeof(use)) == 0);
+        CHECK(nano_build_capture_slot_load(lf, sizeof(lf), 25, NANO_IR_FACTORY, 5, "Comet 60 6") == 0);
+        const uint8_t ir_use[] = { 0x0E, 0xC0, 0x18, 0x03, 0x2A, 0x06, 0x08, 0x17, 0x12, 0x02, 'Y', 'A', 0x4E, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_cab_slot_load(f, sizeof(f), 3, NANO_IR_USER, 23, "YA") == sizeof(ir_use) && memcmp(f, ir_use, sizeof(ir_use)) == 0);
+        CHECK(nano_build_cab_slot_load(f, sizeof(f), 5, NANO_IR_USER, 23, "YA") == 0);
+        const uint8_t cap_sel[] = { 0x08, 0xC0, 0x18, 0x01, 0x20, 0x05, 0x1C, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_capture_select(f, sizeof(f), 5) == sizeof(cap_sel) && memcmp(f, cap_sel, sizeof(cap_sel)) == 0);
+        const uint8_t gate[] = { 0x0A, 0xC0, 0x18, 0x0B, 0x20, 0x71, 0x28, 0x00, 0x1A, 0x00, 0x00, 0x00 };
+        CHECK(nano_build_gate_threshold(f, sizeof(f), 0x71) == sizeof(gate) && memcmp(f, gate, sizeof(gate)) == 0);
         /* Loading an IR: the factory one as the microphone frame's IR part, the user one in field 4. */
         const uint8_t load_f[] = { 0x0B, 0xC0, 0x1A, 0x05, 0x08, 0x06, 0x12, 0x01, 'A', 0x5E, 0x00, 0x00, 0x00 };
         CHECK(nano_build_cab_load(f, sizeof(f), NANO_IR_FACTORY, 6, "A") == sizeof(load_f) && memcmp(f, load_f, sizeof(load_f)) == 0);

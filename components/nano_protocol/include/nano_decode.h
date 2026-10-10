@@ -52,6 +52,7 @@ typedef struct {
     bool has_bypass;                   /* field 31 present */
     bool fx_on[NANO_FX_SLOT_COUNT];    /* pre1, pre2, post1, post2, post3 */
     bool gate_on;                      /* field 54 absent = on (inverted flag) */
+    int16_t gate_threshold;            /* field 53 (f32 0..1) as the write's raw 0..255 (nano_build_gate_threshold; absent = 0) */
     bool cab_on;                       /* field 12 present */
     uint8_t cab_slot;                  /* field 12 as sent: the IR slot 1..5 (DrD85; 6 in one of our dumps), 0 = absent */
     bool capture_on;                   /* field 11 > 0 (position in the bank; 0 / absent = bypassed) */
@@ -95,21 +96,23 @@ typedef struct {
 bool nano_decode_cab_settings(const uint8_t *payload, size_t len, nano_cab_settings_t *out);
 
 /*
- * IR library (type 0x4D, reply to nano_build_library_request; DrD85's nano_library_parse): every IR on the pedal, not
- * just the five on its IR list. Field 4 = a factory IR's name, 6 = a user IR's name, repeated in the pedal's order
- * (an IR's index is its position in its list); 3 / 5 = captures, skipped here.
+ * Library (type 0x4D, reply to nano_build_library_request; DrD85's nano_library_parse): every capture and IR on the
+ * pedal, not just the 25 captures and 5 IRs in its banks. Fields 3 / 5 = a factory / user capture {1: hash, 2: name},
+ * 4 / 6 = a factory / user IR's name, each repeated in the pedal's order (an item's index is its position in its
+ * list, what the loads address it by).
  */
-enum { NANO_IR_FACTORY = 0, NANO_IR_USER = 1 };
+enum { NANO_IR_FACTORY = 0, NANO_IR_USER = 1 }; /* a list: factory or user (captures too) */
+enum { NANO_LIB_CAPTURES = 1, NANO_LIB_IRS = 2 }; /* what to ask for / decode */
 typedef struct {
     uint16_t count[2];                 /* NANO_IR_FACTORY, NANO_IR_USER */
     uint16_t size;                     /* bytes of `names` */
     char names[];                      /* the factory names, then the user names, each '\0'-ended */
-} nano_ir_library_t;
-/* The bytes the library needs (header + names), 0 when the payload names no IR. Fills `out` only when that fits
- * `cap` (out NULL: just measure). */
-size_t nano_decode_ir_library(const uint8_t *payload, size_t len, nano_ir_library_t *out, size_t cap);
-/* Name of IR `index` in `list`, NULL when out of range. */
-const char *nano_ir_library_name(const nano_ir_library_t *lib, int list, int index);
+} nano_library_t;
+/* The names of `what` (NANO_LIB_CAPTURES or NANO_LIB_IRS): the bytes the list needs (header + names), 0 when the
+ * payload names none. Fills `out` only when that fits `cap` (out NULL: just measure). */
+size_t nano_decode_library(const uint8_t *payload, size_t len, int what, nano_library_t *out, size_t cap);
+/* Name of item `index` in `list`, NULL when out of range. */
+const char *nano_library_name(const nano_library_t *lib, int list, int index);
 
 /* FX parameters reply (type 0x8A, nano_build_fx_params_request): field 4 = every parameter's 0..1, packed f32, in the
  * model's order (nano_fx_params.h). Returns how many went into `values` (at most `max`); 0 = none. */

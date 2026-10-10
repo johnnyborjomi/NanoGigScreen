@@ -102,7 +102,7 @@ size_t nano_build_cab_phase(uint8_t *out, size_t cap, bool inverted);
 /* `kind` and `ir_name` as the read reported them (nano_cab_settings_t). Returns 0 when too long. */
 size_t nano_build_cab_mic(uint8_t *out, size_t cap, uint32_t kind, const char *ir_name, uint8_t position, const char *mic);
 /*
- * Load an IR from the pedal's library (nano_decode_ir_library) into the current preset, a live edit like picking one
+ * Load an IR from the pedal's library (nano_decode_library) into the current preset, a live edit like picking one
  * in Cortex Cloud's IR loader. The read's `kind` is the IR's index in its list (2026-10-09: user IR "Tay816 M251
  * Pz1" = kind 7 = 8th user IR).
  *   factory  `<len> C0 1A <n> { 08 <index> 12 <name> } 5E 00 00 00`: the microphone frame without position and
@@ -115,9 +115,36 @@ size_t nano_build_cab_load(uint8_t *out, size_t cap, int list, uint32_t index, c
 /*
  * Library request (Cortex Cloud's, byte-exact from the 2026-10-09 snoop; DrD85's RetrieveLibraryContent):
  * `0C C0 18 01 20 01 28 01 30 01 4C 00 00 00` asks for factory captures, factory IRs, user captures and user IRs
- * (fields 3..6, as the reply's), ~11 KB. `irs_only` leaves fields 3 and 5 out: the IR names alone (untested).
+ * (fields 3..6, as the reply's), ~11 KB. `what` = NANO_LIB_CAPTURES and / or NANO_LIB_IRS (nano_decode.h): the IR
+ * names alone are ~1.1 KB, the captures ~10 KB (each with a 64 character hash).
  */
-size_t nano_build_library_request(uint8_t *out, size_t cap, bool irs_only);
+size_t nano_build_library_request(uint8_t *out, size_t cap, int what);
+
+/*
+ * Captures and IRs from the library, as Cortex Cloud's loaders do them (Android HCI snoops, 2026-10-09 / -10). A tap
+ * on an item previews it: a live edit of the preset (its unsaved flag goes on; the screen's lists stop there). "Use"
+ * then writes the item into the bank slot the preset points at (the pedal's 25 captures / 5 IRs: every preset on that
+ * slot hears it) and selects that slot; for an IR, the preview load follows. The slot loads are kept here, unused. `list` = NANO_IR_FACTORY / NANO_IR_USER, `index` its place there.
+ *   capture preview  `<len> C0 <1A factory / 22 user> <n> { 08 <index> 12 <name> } 40 01 96 00 00 00`
+ *                    -> type 0x97 `08 06 18 01 22 { 12 <name> 1A <hash> }`
+ *   capture use      `<len> C0 18 <slot 0..24> <22 factory / 2A user> <n> { 08 <index> 12 <name> } 50 00 00 00`
+ *                    -> type 0x51 `08 06 18 01`, then nano_build_capture_select(slot + 1)
+ *   IR use           `<len> C0 18 <slot 0..4> <22 factory / 2A user> <n> { ... } 4E 00 00 00` -> type 0x4F, then
+ *                    nano_build_cab_select(slot + 1) and nano_build_cab_load (the factory field is DrD85's)
+ * Return 0 for an empty name, a slot out of range or one that does not fit.
+ */
+size_t nano_build_capture_preview(uint8_t *out, size_t cap, int list, uint32_t index, const char *name);
+size_t nano_build_capture_slot_load(uint8_t *out, size_t cap, uint8_t slot, int list, uint32_t index, const char *name);
+size_t nano_build_cab_slot_load(uint8_t *out, size_t cap, uint8_t slot, int list, uint32_t index, const char *name);
+/* The capture in bank slot 1..25 on (Cortex Cloud after a use: `08 C0 18 01 20 <slot> 1C 00 00 00`), 0 = bypassed. */
+size_t nano_build_capture_select(uint8_t *out, size_t cap, uint8_t slot);
+
+/*
+ * Gate threshold, raw 0..255 (Cortex Cloud's gate slider, 2026-10-10 snoop): `<len> C0 18 0B 20 <raw varint> 28 00
+ * 1A 00 00 00`, the capture volume's frame with selector 11. State field 53 carries it back as f32 raw / 255
+ * (verified 2026-10-10: 199 written, 0.78 read; Cortex Cloud shows it as 0..100 %). A live edit.
+ */
+size_t nano_build_gate_threshold(uint8_t *out, size_t cap, uint8_t raw);
 
 /*
  * An FX block's model and parameters (Cortex Cloud's FX editor), frames from DrD85/nano-cortex-controller (MIT). Live

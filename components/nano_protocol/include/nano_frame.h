@@ -61,7 +61,11 @@ enum {
     NANO_MSG_SETTINGS_UPDATE = 0x43, /* nano_build_outputs_mute */
     NANO_MSG_OUTPUTS_MUTE_ACK = 0x44, /* any settings write answers this (UpdateSettingsResponse) */
     NANO_MSG_LIBRARY_REQUEST = 0x4c, /* nano_build_library_request */
-    NANO_MSG_LIBRARY = 0x4d,         /* reply: every capture and IR on the pedal (nano_decode_ir_library) */
+    NANO_MSG_LIBRARY = 0x4d,         /* reply: every capture and IR on the pedal (nano_decode_library) */
+    NANO_MSG_CAB_SLOT_LOAD = 0x4e,   /* nano_build_cab_slot_load */
+    NANO_MSG_CAB_SLOT_LOADED = 0x4f, /* its reply: field 3 = 1 ok */
+    NANO_MSG_CAPTURE_SLOT_LOAD = 0x50, /* nano_build_capture_slot_load */
+    NANO_MSG_CAPTURE_SLOT_LOADED = 0x51,
     NANO_MSG_CAB_SETTING = 0x5e,     /* nano_build_cab_setting */
     NANO_MSG_CAB_SETTINGS_REQUEST = 0x5f, /* nano_build_cab_settings_request */
     NANO_MSG_CAB_SETTINGS = 0x60,    /* reply to nano_build_cab_settings_request (nano_decode_cab_settings) */
@@ -74,7 +78,9 @@ enum {
     NANO_MSG_FX_MODEL = 0x88,        /* nano_build_fx_model */
     NANO_MSG_FX_PARAMS_REQUEST = 0x89, /* nano_build_fx_params_request */
     NANO_MSG_FX_PARAMS = 0x8a,       /* reply (nano_decode_fx_params) */
-    NANO_MSG_TAP_TEMPO = 0x91,       /* tap tempo: field 3 = 1 while the mode is on, field 5 = BPM (f32); field 3 absent = mode left */
+    NANO_MSG_TAP_TEMPO = 0x91,
+    NANO_MSG_CAPTURE_PREVIEW = 0x96, /* nano_build_capture_preview */
+    NANO_MSG_CAPTURE_PREVIEWED = 0x97, /* its reply: field 3 = 1 ok, 4 = {2 name, 3 hash} */       /* tap tempo: field 3 = 1 while the mode is on, field 5 = BPM (f32); field 3 absent = mode left */
     NANO_MSG_EXPRESSION_VALUES = 0xaa,
 };
 

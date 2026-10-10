@@ -83,7 +83,8 @@ static void noop_rename(uint8_t i, const char *n) { (void)i; (void)n; }
 static void noop_cab(uint8_t p, float n) { (void)p; (void)n; }
 static void noop_mic(uint8_t p, const char *m) { (void)p; (void)m; }
 static void noop_folder(uint8_t op, uint8_t list, uint8_t folder, const char *text) { (void)op, (void)list, (void)folder, (void)text; }
-static void noop_pick(uint8_t list, uint16_t index, const char *name) { (void)list, (void)index, (void)name; }
+static void noop_pick(uint8_t source, uint8_t list, uint16_t index, const char *name) { (void)source, (void)list, (void)index, (void)name; }
+static void noop_lib(uint8_t source, bool open) { (void)source, (void)open; }
 static void noop_fx_param(uint8_t slot, uint8_t param, float n) { (void)slot, (void)param, (void)n; }
 static void noop_fx_model(uint8_t slot, uint32_t type) { (void)slot, (void)type; }
 
@@ -99,7 +100,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_on = noop_b, .on_cab_step = noop_i, .on_ir_library = noop_b, .on_ir_pick = noop_pick, .on_ir_folder_edit = noop_folder, .on_cab_mic = noop_mic, .on_fx_view = noop_fx, .on_fx_param = noop_fx_param, .on_fx_model = noop_fx_model };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_on = noop_b, .on_cab_step = noop_i, .on_library = noop_lib, .on_library_pick = noop_pick, .on_gate_threshold = noop_u8, .on_ir_folder_edit = noop_folder, .on_cab_mic = noop_mic, .on_fx_view = noop_fx, .on_fx_param = noop_fx_param, .on_fx_model = noop_fx_model };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -373,14 +374,14 @@ int main(int argc, char **argv)
             size_t size = 0;
             for (size_t i = 0; i < 5; i++) size += strlen(factory[i]) + 1;
             for (size_t i = 0; i < 9; i++) size += strlen(user[i]) + 1;
-            nano_ir_library_t *lib = malloc(sizeof(*lib) + size);
+            nano_library_t *lib = malloc(sizeof(*lib) + size);
             lib->count[NANO_IR_FACTORY] = 5;
             lib->count[NANO_IR_USER] = 9;
             lib->size = (uint16_t)size;
             char *p = lib->names;
             for (size_t i = 0; i < 5; i++) p = stpcpy(p, factory[i]) + 1;
             for (size_t i = 0; i < 9; i++) p = stpcpy(p, user[i]) + 1;
-            nano_ui_set_ir_library(lib);
+            nano_ui_set_library(NANO_SOURCE_IR, lib);
         }
         render(50);
         save(dir, "9w-ir-list-user");
@@ -427,6 +428,44 @@ int main(int argc, char **argv)
         if (rename) lv_obj_send_event(rename, LV_EVENT_CLICKED, NULL);
         render(50);
         save(dir, "9y5-ir-folder-rename");
+        nano_ui_show(NANO_VIEW_MAIN);
+        /* Capture list (hold the capture name): tap one to load it. */
+        lng.capture_on = true;
+        strcpy(lng.capture_name, "Comet 60 6");
+        strcpy(meta.presets[lng.active_preset].capture_name, "Comet 60 6");
+        nano_ui_set_state(&lng, &meta);
+        nano_ui_show(NANO_VIEW_CAPTURE_LIST);
+        {
+            static const char *const factory[] = { "CA John's Ch1 1", "Comet 60 5", "Bogna X100B Ch1 1", "Watt Custom Clean 7", "Comet 60 6", "Rodent Drive" };
+            static const char *const user[] = { "Brit 2203 87", "Victor Mega Squid 7", "CA Tremo Modern 5", "VX TB50 BR Crunch BAL DI" };
+            size_t size = 0;
+            for (size_t i = 0; i < 6; i++) size += strlen(factory[i]) + 1;
+            for (size_t i = 0; i < 4; i++) size += strlen(user[i]) + 1;
+            nano_library_t *lib = malloc(sizeof(*lib) + size);
+            lib->count[NANO_IR_FACTORY] = 6;
+            lib->count[NANO_IR_USER] = 4;
+            lib->size = (uint16_t)size;
+            char *p = lib->names;
+            for (size_t i = 0; i < 6; i++) p = stpcpy(p, factory[i]) + 1;
+            for (size_t i = 0; i < 4; i++) p = stpcpy(p, user[i]) + 1;
+            nano_ui_set_library(NANO_SOURCE_CAPTURE, lib);
+        }
+        render(50);
+        save(dir, "9ca-capture-list");
+        lv_obj_t *bogna = nano_ui_find("Bogna X100B Ch1 1");
+        if (bogna) lv_obj_send_event(bogna, LV_EVENT_SHORT_CLICKED, NULL);
+        strcpy(lng.capture_name, "Bogna X100B Ch1 1"); /* the app shows the preview at once */
+        nano_ui_set_state(&lng, &meta);
+        render(50);
+        save(dir, "9cb-capture-picked");
+        nano_ui_show(NANO_VIEW_MAIN);
+        /* Gate page (hold GATE). */
+        lng.gate_on = true;
+        lng.gate_threshold = 109;
+        nano_ui_set_state(&lng, &meta);
+        nano_ui_show(NANO_VIEW_GATE);
+        render(50);
+        save(dir, "9g-gate");
         nano_ui_show(NANO_VIEW_MAIN);
         /* FX editor (hold a tile): Post 2 = Analog Delay (on), Pre 1 = Green 808 (off). */
         nano_state_t fx = st;

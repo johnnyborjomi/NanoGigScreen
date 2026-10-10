@@ -7,7 +7,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "expression.h"
-#include "ir_library.h"
+#include "library.h"
 #include "nano_ui.h"
 #include "pedal_in.h"
 #include "preset_select.h"
@@ -165,7 +165,7 @@ static void drop_link_work(void)
     tuner_link_reset();
     expression_link_reset();
     remote_pages_link_reset();
-    ir_library_link_reset();
+    library_link_reset();
     rename_link_reset();
 }
 

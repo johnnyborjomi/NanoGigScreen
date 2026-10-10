@@ -1,13 +1,15 @@
 /*
- * IR list: every IR on the pedal, as Cortex Cloud's IR loader lists them (not just the five on the pedal's IR list),
- * in folders of our own (nano_ir_folders.h). Tabs User / Factory in the header, five rows a page:
- *   - the top of a list: its folders, then the IRs in none; inside a folder: its IRs;
- *   - tap an IR to load it into the preset (a live edit; the list stays open to try the next), tap a folder to open
- *     it, hold an IR to move it (the rows become the folders to put it in);
+ * Capture / IR list: every capture or IR on the pedal, as Cortex Cloud's loaders list them (not just the 25 captures /
+ * 5 IRs in its banks), in folders of our own (nano_ir_folders.h). One page for both (NANO_VIEW_CAPTURE_LIST /
+ * NANO_VIEW_IR_LIST). Tabs User / Factory in the header, five rows a page:
+ *   - the top of a list: its folders, then the items in none; inside a folder: its items;
+ *   - tap an item to load it into the preset (Cortex Cloud's preview: a live edit, kept when the preset is saved;
+ *     the list stays open to try the next). No "Use": that writes into a bank slot other presets may share;
+ *     tap a folder to open it, hold an item to move it (the rows become the folders to put it in);
  *   - the bar at the bottom: "+ Folder" at the top of a list; "< name", rename and delete (tap twice) in a folder.
- * The current IR has a green outline, the preset's saved one teal text. The app reads the library on open
- * (nano_ui_set_ir_library) and owns the folders (nano_ui_set_ir_folders): both are copies freed on close. Built on
- * open; "<" goes back to the IR tab.
+ * The current item has a green outline, the preset's saved one teal text. The app reads the library on open
+ * (nano_ui_set_library) and owns the folders (nano_ui_set_ir_folders): both are copies freed on close. Built on
+ * open; "<" goes back to the item's tab.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +35,8 @@ typedef struct {
 } item_t;
 
 static struct {
-    nano_ir_library_t *lib;         /* owned; NULL while the pedal has not answered */
+    nano_source_t source;           /* the list showing */
+    nano_library_t *lib;            /* owned; NULL while the pedal has not answered */
     nano_ir_folders_t *folders;     /* owned copy; NULL until the app sent it */
     int tab;                        /* 0 = User, 1 = Factory */
     uint8_t folder;                 /* open folder, NANO_IR_NO_FOLDER = the top of the list */
@@ -51,8 +54,13 @@ static struct {
 } w;
 
 static int list(void) { return LISTS[s.tab]; }
+static int folder_list(void) { return NANO_FOLDER_LIST(s.source, list()); }
+static bool irs(void) { return s.source == NANO_SOURCE_IR; }
+static const char *noun(void) { return irs() ? "IR" : "capture"; }
+static const char *current(void) { return irs() ? ir_tab_name() : capture_tab_name(); }
+static bool is_saved(const char *name) { return irs() ? ir_is_saved(name) : capture_is_saved(name); }
 static const nano_ir_folder_t *open_folder(void) { return s.folders ? nano_ir_folder_find(s.folders, s.folder) : NULL; }
-static uint8_t folder_of(const char *ir) { return s.folders ? nano_ir_folder_of(s.folders, list(), ir) : NANO_IR_NO_FOLDER; }
+static uint8_t folder_of(const char *item) { return s.folders ? nano_ir_folder_of(s.folders, folder_list(), item) : NANO_IR_NO_FOLDER; }
 static void reload(int page);
 
 /* ---- items: what the rows show in this mode ------------------------------------------- */
@@ -69,7 +77,7 @@ static bool item_at(int n, item_t *it)
     }
     if (s.mode == MODE_MOVE || s.folder == NANO_IR_NO_FOLDER) {
         for (int i = 0; i < folders; i++) {
-            if (s.folders->folders[i].list == list() && n-- == 0) {
+            if (s.folders->folders[i].list == folder_list() && n-- == 0) {
                 *it = (item_t){ ITEM_FOLDER, i };
                 return true;
             }
@@ -77,7 +85,7 @@ static bool item_at(int n, item_t *it)
         if (s.mode == MODE_MOVE) return false;
     }
     for (int i = 0; s.lib && i < s.lib->count[list()]; i++) {
-        const char *name = nano_ir_library_name(s.lib, list(), i);
+        const char *name = nano_library_name(s.lib, list(), i);
         if (name[0] && folder_of(name) == s.folder && n-- == 0) {
             *it = (item_t){ ITEM_IR, i };
             return true;
@@ -127,7 +135,7 @@ static void show_bar(void)
     lv_obj_set_hidden(w.bar_delete, !in_folder);
     lv_obj_set_hidden(w.bar_text, in_folder || s.mode == MODE_NAME_NEW || s.mode == MODE_RENAME);
     if (s.mode == MODE_MOVE) lv_label_set_text_fmt(w.bar_text, "Move %s to:", s.moving);
-    else lv_label_set_text(w.bar_text, s.lib && s.folders ? "Hold an IR to move it" : "");
+    else lv_label_set_text(w.bar_text, s.lib && s.folders ? "Hold one to move it" : "");
     if (!in_folder) disarm();
 }
 
@@ -135,7 +143,7 @@ static void show_bar(void)
 
 static void show_page(int page)
 {
-    const char *current = ir_tab_name();
+    const char *cur = current();
     for (int i = 0; i < ROWS; i++) {
         item_t it;
         bool shown = s.mode != MODE_NAME_NEW && s.mode != MODE_RENAME && item_at(page * ROWS + i, &it);
@@ -144,10 +152,10 @@ static void show_page(int page)
         uint32_t color = C_TEXT;
         bool outlined = false;
         if (it.kind == ITEM_IR) {
-            const char *name = nano_ir_library_name(s.lib, list(), it.index);
+            const char *name = nano_library_name(s.lib, list(), it.index);
             lv_label_set_text(w.names[i], name);
-            outlined = strcmp(name, current) == 0;
-            if (ir_is_saved(name)) color = C_SAVED;
+            outlined = strcmp(name, cur) == 0;
+            if (is_saved(name)) color = C_SAVED;
         } else if (it.kind == ITEM_FOLDER) {
             const nano_ir_folder_t *d = &s.folders->folders[it.index];
             lv_label_set_text_fmt(w.names[i], LV_SYMBOL_DIRECTORY "  %s  (%d)", d->name, folder_size(d->id));
@@ -160,10 +168,13 @@ static void show_page(int page)
         lv_obj_set_style_text_color(w.names[i], lv_color_hex(color), 0);
         lv_obj_set_style_border_width(w.rows[i], outlined ? 2 : 0, 0);
     }
-    const char *note = !s.lib ? "Reading the pedal's IRs..."
-                       : s.mode == MODE_MOVE && !item_count() ? "No folders yet: make one with + Folder"
-                       : !item_count() && s.mode == MODE_BROWSE ? (s.folder ? "Empty: hold an IR to move it here" : s.tab == 0 ? "No user IRs" : "No factory IRs")
-                       : "";
+    char note[48] = "";
+    if (!s.lib) snprintf(note, sizeof(note), "Reading the pedal's %ss...", noun());
+    else if (s.mode == MODE_MOVE && !item_count()) snprintf(note, sizeof(note), "No folders yet: make one with + Folder");
+    else if (!item_count() && s.mode == MODE_BROWSE) {
+        if (s.folder) snprintf(note, sizeof(note), "Empty: hold a %s to move it here", noun());
+        else snprintf(note, sizeof(note), "No %s %ss", s.tab == 0 ? "user" : "factory", noun());
+    }
     lv_label_set_text(w.note, note);
     show_bar();
 }
@@ -177,17 +188,17 @@ static void reload(int page)
 /* The page of the current IR in this view, else the first. */
 static int page_of_current(void)
 {
-    const char *current = ir_tab_name();
+    const char *cur = current();
     item_t it;
     for (int n = 0; item_at(n, &it); n++) {
-        if (it.kind == ITEM_IR && strcmp(nano_ir_library_name(s.lib, list(), it.index), current) == 0) return n / ROWS;
+        if (it.kind == ITEM_IR && strcmp(nano_library_name(s.lib, list(), it.index), cur) == 0) return n / ROWS;
     }
     return 0;
 }
 
 static void edit(nano_ir_folder_op_t op, uint8_t folder, const char *text)
 {
-    if (g_ui.cb.on_ir_folder_edit) g_ui.cb.on_ir_folder_edit((uint8_t)op, (uint8_t)list(), folder, text);
+    if (g_ui.cb.on_ir_folder_edit) g_ui.cb.on_ir_folder_edit((uint8_t)op, (uint8_t)folder_list(), folder, text);
 }
 
 /* ---- naming a folder: the keyboard over the rows ------------------------------------------ */
@@ -207,7 +218,7 @@ static bool validate(const char *text, char *why, size_t cap, void *user)
         snprintf(why, cap, "No space at the start or end");
         return false;
     }
-    if (s.folders && nano_ir_folder_named(s.folders, list(), text, s.mode == MODE_RENAME ? s.folder : NANO_IR_NO_FOLDER)) {
+    if (s.folders && nano_ir_folder_named(s.folders, folder_list(), text, s.mode == MODE_RENAME ? s.folder : NANO_IR_NO_FOLDER)) {
         snprintf(why, cap, "A folder has this name");
         return false;
     }
@@ -253,7 +264,7 @@ static void on_back(lv_event_t *e)
 {
     (void)e;
     if (s.mode == MODE_NAME_NEW || s.mode == MODE_RENAME) end_naming();
-    else ui_go(NANO_VIEW_IR);
+    else ui_go(irs() ? NANO_VIEW_IR : NANO_VIEW_CAPTURE);
 }
 
 static void on_close(lv_event_t *e) { (void)e; ui_go_base(); }
@@ -267,7 +278,7 @@ static void select_tab(int tab)
     s.tab = tab;
     s.mode = MODE_BROWSE;
     ui_header_tabs_select(w.tabs, tab);
-    s.folder = folder_of(ir_tab_name()); /* where the current IR is */
+    s.folder = folder_of(current()); /* where the current item is */
     reload(page_of_current());
 }
 
@@ -284,8 +295,8 @@ static void on_row(lv_event_t *e)
     } else if (it.kind == ITEM_FOLDER) {
         s.folder = s.folders->folders[it.index].id;
         reload(0);
-    } else if (it.kind == ITEM_IR && g_ui.cb.on_ir_pick) {
-        g_ui.cb.on_ir_pick((uint8_t)list(), (uint16_t)it.index, nano_ir_library_name(s.lib, list(), it.index));
+    } else if (it.kind == ITEM_IR && g_ui.cb.on_library_pick) {
+        g_ui.cb.on_library_pick((uint8_t)s.source, (uint8_t)list(), (uint16_t)it.index, nano_library_name(s.lib, list(), it.index));
     }
 }
 
@@ -293,7 +304,7 @@ static void on_row_long(lv_event_t *e)
 {
     item_t it;
     if (s.mode != MODE_BROWSE || !s.folders || !item_at(w.pager.current * ROWS + (int)(intptr_t)lv_event_get_user_data(e), &it) || it.kind != ITEM_IR) return;
-    snprintf(s.moving, sizeof(s.moving), "%s", nano_ir_library_name(s.lib, list(), it.index));
+    snprintf(s.moving, sizeof(s.moving), "%s", nano_library_name(s.lib, list(), it.index));
     s.mode = MODE_MOVE;
     reload(0);
 }
@@ -398,16 +409,17 @@ static void destroy(void)
 
 static void enter(nano_view_t view, nano_view_t from, bool notify)
 {
-    (void)view, (void)from, (void)notify;
+    (void)from, (void)notify;
+    s.source = view == NANO_VIEW_CAPTURE_LIST ? NANO_SOURCE_CAPTURE : NANO_SOURCE_IR;
     s.armed_ms = 0;
     select_tab(0);
-    if (g_ui.cb.on_ir_library) g_ui.cb.on_ir_library(true);
+    if (g_ui.cb.on_library) g_ui.cb.on_library((uint8_t)s.source, true);
 }
 
 static void leave(nano_view_t to, bool notify)
 {
     (void)to, (void)notify;
-    if (g_ui.cb.on_ir_library) g_ui.cb.on_ir_library(false);
+    if (g_ui.cb.on_library) g_ui.cb.on_library((uint8_t)s.source, false);
 }
 
 ui_page_t page_ir_list = { .build = build, .destroy = destroy, .enter = enter, .leave = leave, .needs_link = true };
@@ -417,19 +429,19 @@ void ir_list_refresh(void)
     if (w.built && !w.naming) show_page(w.pager.current);
 }
 
-/* Opens on the tab holding the current IR (User when it is in neither), in its folder. */
-void nano_ui_set_ir_library(nano_ir_library_t *lib)
+/* Opens on the tab holding the current item (User when it is in neither), in its folder. */
+void nano_ui_set_library(uint8_t source, nano_library_t *lib)
 {
-    if (!w.built) {
+    if (!w.built || source != s.source) {
         free(lib);
         return;
     }
     free(s.lib);
     s.lib = lib;
-    const char *current = ir_tab_name();
+    const char *cur = current();
     int tab = 0;
     for (int i = 0; lib && i < lib->count[NANO_IR_FACTORY]; i++) {
-        if (strcmp(nano_ir_library_name(lib, NANO_IR_FACTORY, i), current) == 0) tab = 1;
+        if (strcmp(nano_library_name(lib, NANO_IR_FACTORY, i), cur) == 0) tab = 1;
     }
     if (!w.naming) select_tab(tab);
 }

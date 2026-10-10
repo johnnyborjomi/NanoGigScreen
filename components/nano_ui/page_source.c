@@ -2,12 +2,13 @@
  * Capture / IR page: one page with a tab per source in the header (a view each, NANO_VIEW_CAPTURE / _IR). Only the
  * tab showing exists: both at once ran the heap out (2026-10-09, a crash drawing the pager label).
  *
- * Capture tab: name and on / off dot, then the volume as a ui_value_ctrl in Cortex Cloud's dB scale and readout
+ * Capture tab: name and on / off dot (hold it for the capture list), then the volume as a ui_value_ctrl in Cortex Cloud's dB scale and readout
  * (-24..+12 dB, tenths cut toward zero; nano_capture_volume_*): the slider runs in tenths of a dB, steps of 0.1 and
  * 1 dB, double tap on the value for 0.0 dB (raw 128). The IR tab is ir_tab.c.
  */
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "ir_tab.h"
 #include "ui_internal.h"
@@ -30,6 +31,7 @@ static struct {
 } w = { .tab = -1 };
 
 static void on_close(lv_event_t *e) { (void)e; ui_go_base(); }
+static void on_open_list(lv_event_t *e) { (void)e; ui_go(NANO_VIEW_CAPTURE_LIST); }
 static void on_tab(lv_event_t *e) { ui_go(lv_event_get_user_data(e) ? NANO_VIEW_IR : NANO_VIEW_CAPTURE); }
 
 /* ---- capture tab ------------------------------------------------------------------- */
@@ -60,6 +62,10 @@ static void build_capture_tab(lv_obj_t *page)
     lv_obj_set_pos(w.cap_name, 34, SOURCE_NAME_Y);
     lv_obj_set_width(w.cap_name, SCREEN_W - 34 - 12);
     lv_label_set_long_mode(w.cap_name, LV_LABEL_LONG_WRAP);
+    /* Hold the name: every capture on the pedal (a tap does nothing). */
+    lv_obj_set_clickable(w.cap_name, true);
+    lv_obj_set_ext_click_area(w.cap_name, 6);
+    lv_obj_add_event_cb(w.cap_name, on_open_list, LV_EVENT_LONG_PRESSED, NULL);
 
     static const ui_value_ctrl_cfg_t VOLUME = {
         .raw_min = 0, .raw_max = 255,
@@ -138,6 +144,14 @@ static void leave(nano_view_t to, bool notify)
 ui_page_t page_source = { .build = build, .destroy = destroy, .enter = enter, .leave = leave, .needs_link = true };
 
 bool source_tab_is(int tab) { return w.tab == tab; }
+
+const char *capture_tab_name(void) { return s.name; }
+
+/* The capture the shown preset was saved with (the metadata's record). */
+bool capture_is_saved(const char *name)
+{
+    return name[0] && g_ui.meta && s.preset >= 0 && s.preset < NANO_PRESET_COUNT && strcmp(name, g_ui.meta->presets[s.preset].capture_name) == 0;
+}
 
 /* A state's capture and IR. While the page is open the volume control decides whether the volume shows (it ignores
  * reports that were requested before its latest change). */

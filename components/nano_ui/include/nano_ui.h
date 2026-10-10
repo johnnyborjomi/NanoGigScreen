@@ -4,7 +4,7 @@
  *
  * Main view: top bar (link status, tempo, gate, menu button), preset row
  * (prev button, bank label + name, next button; holding prev / next opens the presets
- * list), capture and IR lines, five FX tiles in category colours. Tap a tile to toggle that block, hold it to edit
+ * list), capture and IR lines (hold one: its tab), GATE (hold: the gate page), five FX tiles in category colours. Tap a tile to toggle that block, hold it to edit
  * the block (type, model, parameters). LIST (right of
  * the capture / IR lines) opens the presets list; holding the capture or IR line opens its tab of the
  * Capture / IR page.
@@ -38,11 +38,17 @@ typedef enum {
     NANO_VIEW_CAPTURE,     /* the capture: name, on / off, volume (tap the capture line); a tab next to the IR */
     NANO_VIEW_IR,          /* the IR: name, on / off, phase, < > through the IR list, Level / High pass / Low pass, microphone */
     NANO_VIEW_RENAME,      /* rename a preset (long press on its name): open with nano_ui_open_rename */
-    NANO_VIEW_IR_LIST,     /* every IR on the pedal, User / Factory tabs (long press on the IR tab's name): tap one to load it */
+    NANO_VIEW_IR_LIST,     /* every IR on the pedal, User / Factory tabs (long press on the IR tab's name): tap one to
+                            * load it into the preset */
     NANO_VIEW_FX,          /* an FX block (long press on its tile): type, model, on / off, then its parameters */
     NANO_VIEW_FX_TYPE,     /* the types the block's slot takes, as tiles (long press on the editor's type) */
     NANO_VIEW_FX_MODEL,    /* one type's models (a type tile, or long press on the editor's model): tap one to load it */
+    NANO_VIEW_CAPTURE_LIST, /* every capture on the pedal, as the IR list (long press on the capture tab's name) */
+    NANO_VIEW_GATE,        /* the gate: on / off and threshold (long press on GATE) */
 } nano_view_t;
+
+/* The capture and IR lists (on_library, nano_ui_set_library). */
+typedef enum { NANO_SOURCE_CAPTURE = 0, NANO_SOURCE_IR = 1 } nano_source_t;
 
 /* What the firmware update view shows under the Wi-Fi line. */
 typedef enum {
@@ -81,12 +87,15 @@ typedef struct {
     void (*on_cab_on)(bool on);
     /* IR tab: the previous (-1) / next (+1) IR on the pedal's list. NULL = no < > buttons. */
     void (*on_cab_step)(int delta);
-    /* IR list opened (true) / closed (false): the app reads the pedal's IR library (nano_ui_set_ir_library). */
-    void (*on_ir_library)(bool open);
-    /* IR list: load IR `index` of `list` (NANO_IR_FACTORY / NANO_IR_USER) into the preset. */
-    void (*on_ir_pick)(uint8_t list, uint16_t index, const char *name);
-    /* IR list: create / rename / delete a folder, or file an IR (nano_ir_folder_op_t); the app answers with
-     * nano_ui_set_ir_folders. */
+    /* Capture / IR list (`source`, nano_source_t) opened (true) / closed (false): the app reads the pedal's library
+     * (nano_ui_set_library). */
+    void (*on_library)(uint8_t source, bool open);
+    /* Capture / IR list: load item `index` of `list` (NANO_IR_FACTORY / NANO_IR_USER) into the preset. */
+    void (*on_library_pick)(uint8_t source, uint8_t list, uint16_t index, const char *name);
+    /* Gate page: the threshold, raw 0..255. NULL = read-only. */
+    void (*on_gate_threshold)(uint8_t raw);
+    /* Capture / IR list: create / rename / delete a folder, or file an item (nano_ir_folder_op_t; `list` as
+     * nano_ir_folders.h numbers them); the app answers with nano_ui_set_ir_folders. */
     void (*on_ir_folder_edit)(uint8_t op, uint8_t list, uint8_t folder, const char *text);
     /* IR tab, factory IRs: microphone (one of the read's list) and position 0..5 picked. NULL = read-only. */
     void (*on_cab_mic)(uint8_t position, const char *mic);
@@ -162,10 +171,10 @@ void nano_ui_set_state(const nano_state_t *state, const nano_metadata_t *meta);
  * tab shows them while the IR is on. `fresh` = read after the tab's last change: shown even while a control
  * would hold its own value against older reports (EXIT on the pedal reverts edits). */
 void nano_ui_set_ir_settings(const nano_cab_settings_t *settings, int preset, bool fresh);
-/* The IR list's IRs (nano_decode_ir_library into a malloc'd buffer): the screen owns `lib` from here and frees it
- * when the list closes or another one arrives. */
-void nano_ui_set_ir_library(nano_ir_library_t *lib);
-/* The IR folders (copied; the list page shows them while it is open). */
+/* The capture / IR list's items (nano_decode_library into a malloc'd buffer): the screen owns `lib` from here and
+ * frees it when the list closes or another one arrives. */
+void nano_ui_set_library(uint8_t source, nano_library_t *lib);
+/* The capture and IR folders (copied; the list page shows them while it is open). */
 void nano_ui_set_ir_folders(const nano_ir_folders_t *folders);
 /* The FX editor's parameters as the pedal reported them for `slot` with model `type` in `preset` (NULL = the pedal
  * answered without any). `fresh` = read after the editor's last change (shown over values still held). */

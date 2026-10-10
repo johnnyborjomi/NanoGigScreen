@@ -27,7 +27,7 @@
 #include "freertos/task.h"
 #include "fx_page.h"
 #include "ir_folder_store.h"
-#include "ir_library.h"
+#include "library.h"
 #include "ir_page.h"
 #include "link.h"
 #include "nano_ble.h"
@@ -59,7 +59,7 @@ typedef struct {
 
 typedef enum {
     MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_SELECT, MSG_TOGGLE_FX, MSG_TOGGLE_GATE, MSG_CAPTURE_VOLUME, MSG_RENAME,
-    MSG_IR_VIEW, MSG_CAB_SETTING, MSG_CAB_PHASE, MSG_CAB_ON, MSG_CAB_STEP, MSG_IR_LIBRARY, MSG_IR_PICK, MSG_IR_FOLDER, MSG_CAB_MIC, MSG_FX_VIEW, MSG_FX_PARAM, MSG_FX_MODEL, MSG_TUNER, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW,
+    MSG_IR_VIEW, MSG_CAB_SETTING, MSG_CAB_PHASE, MSG_CAB_ON, MSG_CAB_STEP, MSG_LIBRARY, MSG_LIBRARY_PICK, MSG_GATE_THRESHOLD, MSG_IR_FOLDER, MSG_CAB_MIC, MSG_FX_VIEW, MSG_FX_PARAM, MSG_FX_MODEL, MSG_TUNER, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW,
     MSG_LINK, MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS,
     MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE,
 } msg_kind_t;
@@ -72,10 +72,10 @@ typedef struct {
     bool flag;      /* on / open / connect / mute / show / 180 degrees / phase inverted / the tile's current state */
     int delta;      /* MSG_TEMPO_DELTA, MSG_CAB_STEP */
     uint8_t value;  /* preset index, FX slot, raw capture volume, IR parameter / mic position / list, a setting's value */
-    uint16_t index; /* MSG_IR_PICK: the IR's position in its list; MSG_IR_FOLDER: op << 8 | folder; MSG_FX_PARAM: the parameter;
+    uint16_t index; /* MSG_LIBRARY_PICK: the item's position in its list; MSG_IR_FOLDER: op << 8 | folder; MSG_FX_PARAM: the parameter;
                      * MSG_FX_MODEL: the type */
     float number;   /* MSG_CAB_SETTING, MSG_FX_PARAM: the pedal's 0..1 */
-    char text[MSG_TEXT_CAP]; /* MSG_STATUS: the detail, MSG_RENAME: the new name, MSG_CAB_MIC: the microphone, MSG_IR_PICK: the IR */
+    char text[MSG_TEXT_CAP]; /* MSG_STATUS: the detail, MSG_RENAME: the new name, MSG_CAB_MIC: the microphone, MSG_LIBRARY_PICK: the item */
 } app_msg_t;
 
 static QueueHandle_t s_packets, s_cmds; /* both feed the app task through s_inbox, in arrival order */
@@ -131,8 +131,14 @@ static void ui_on_ir_folder_edit(uint8_t op, uint8_t list, uint8_t folder, const
     strlcpy(m.text, text ? text : "", sizeof(m.text));
     post(&m, 0);
 }
-static void ui_on_ir_library(bool open) { post_flag(MSG_IR_LIBRARY, open); }
-static void ui_on_ir_pick(uint8_t list, uint16_t index, const char *name) { app_msg_t m = { .kind = MSG_IR_PICK, .value = list, .index = index }; strlcpy(m.text, name, sizeof(m.text)); post(&m, 0); }
+static void ui_on_library(uint8_t source, bool open) { app_msg_t m = { .kind = MSG_LIBRARY, .value = source, .flag = open }; post(&m, 0); }
+static void ui_on_gate_threshold(uint8_t raw) { post_value(MSG_GATE_THRESHOLD, raw); }
+static void ui_on_library_pick(uint8_t source, uint8_t list, uint16_t index, const char *name)
+{
+    app_msg_t m = { .kind = MSG_LIBRARY_PICK, .value = (uint8_t)(source << 4 | list), .index = index };
+    strlcpy(m.text, name, sizeof(m.text));
+    post(&m, 0);
+}
 static void ui_on_cab_step(int delta) { app_msg_t m = { .kind = MSG_CAB_STEP, .delta = delta }; post(&m, 0); }
 static void ui_on_cab_mic(uint8_t position, const char *mic) { post_text(MSG_CAB_MIC, position, mic); }
 static void ui_on_fx_view(uint8_t slot, bool open) { app_msg_t m = { .kind = MSG_FX_VIEW, .value = slot, .flag = open }; post(&m, 0); }
@@ -177,8 +183,9 @@ static void on_command(const app_msg_t *m)
     case MSG_CAB_PHASE: ir_page_set_phase(m->flag); break;
     case MSG_CAB_ON: block_edits_set_ir_on(m->flag); break;
     case MSG_CAB_STEP: block_edits_step_ir(m->delta); break;
-    case MSG_IR_LIBRARY: ir_library_set_open(m->flag); break;
-    case MSG_IR_PICK: ir_library_pick(m->value, m->index, m->text); break;
+    case MSG_LIBRARY: library_set_open(m->value, m->flag); break;
+    case MSG_LIBRARY_PICK: library_pick(m->value >> 4, m->value & 0xF, m->index, m->text); break;
+    case MSG_GATE_THRESHOLD: block_edits_set_gate_threshold(m->value); break;
     case MSG_IR_FOLDER: ir_folder_store_edit((nano_ir_folder_op_t)(m->index >> 8), m->value, (uint8_t)m->index, m->text); break;
     case MSG_CAB_MIC: ir_page_set_mic(m->value, m->text); break;
     case MSG_FX_VIEW: fx_page_set_open(m->value, m->flag); break;
@@ -290,7 +297,7 @@ void app_main(void)
     nano_ui_callbacks_t ui_cb = {
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_rename_preset = ui_on_rename,
         .on_capture_volume = ui_on_capture_volume, .on_ir_view = ui_on_ir_view, .on_cab_setting = ui_on_cab_setting,
-        .on_cab_phase = ui_on_cab_phase, .on_cab_on = ui_on_cab_on, .on_cab_step = ui_on_cab_step, .on_ir_library = ui_on_ir_library, .on_ir_pick = ui_on_ir_pick, .on_ir_folder_edit = ui_on_ir_folder_edit, .on_cab_mic = ui_on_cab_mic,
+        .on_cab_phase = ui_on_cab_phase, .on_cab_on = ui_on_cab_on, .on_cab_step = ui_on_cab_step, .on_library = ui_on_library, .on_library_pick = ui_on_library_pick, .on_gate_threshold = ui_on_gate_threshold, .on_ir_folder_edit = ui_on_ir_folder_edit, .on_cab_mic = ui_on_cab_mic,
         .on_fx_view = ui_on_fx_view, .on_fx_param = ui_on_fx_param, .on_fx_model = ui_on_fx_model, .on_toggle_fx = ui_on_toggle_fx, .on_toggle_gate = ui_on_toggle_gate,
         .on_tuner = ui_on_tuner, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_link = ui_on_link, .on_bank_size = ui_on_bank_size, .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute,
