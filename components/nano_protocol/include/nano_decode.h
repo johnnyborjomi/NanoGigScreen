@@ -111,6 +111,10 @@ size_t nano_decode_ir_library(const uint8_t *payload, size_t len, nano_ir_librar
 /* Name of IR `index` in `list`, NULL when out of range. */
 const char *nano_ir_library_name(const nano_ir_library_t *lib, int list, int index);
 
+/* FX parameters reply (type 0x8A, nano_build_fx_params_request): field 4 = every parameter's 0..1, packed f32, in the
+ * model's order (nano_fx_params.h). Returns how many went into `values` (at most `max`); 0 = none. */
+int nano_decode_fx_params(const uint8_t *payload, size_t len, float *values, int max);
+
 typedef enum {
     NANO_EV_UNKNOWN = 0,
     NANO_EV_PRESET_CHANGED,    /* preset + footswitch assignments */

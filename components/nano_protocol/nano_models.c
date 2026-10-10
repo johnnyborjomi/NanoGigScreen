@@ -71,6 +71,29 @@ const nano_fx_model_t *nano_lookup_fx_model(const char *id_hex)
     return NULL;
 }
 
+static int hex_digit(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
+
+uint32_t nano_fx_model_type(const nano_fx_model_t *m)
+{
+    if (!m) return 0;
+    uint32_t type = 0;
+    unsigned shift = 0;
+    for (const char *p = m->id; p[0] && p[1] && shift < 28; p += 2, shift += 7) {
+        int hi = hex_digit(p[0]), lo = hex_digit(p[1]);
+        if (hi < 0 || lo < 0) return 0;
+        type |= (uint32_t)(((hi << 4) | lo) & 0x7F) << shift;
+    }
+    return type;
+}
+
+const nano_fx_model_t *nano_fx_model_by_type(uint32_t type)
+{
+    for (size_t i = 0; type && i < sizeof(MODELS) / sizeof(MODELS[0]); i++) {
+        if (nano_fx_model_type(&MODELS[i]) == type) return &MODELS[i];
+    }
+    return NULL;
+}
+
 static const char *const CATEGORY_NAMES[NANO_CAT_COUNT] = {
     "Unknown", "Overdrive", "Compressor", "Modulation", "Delay", "Reverb", "Pitch", "Wah", "Filter", "Utility", "EQ",
 };

@@ -120,6 +120,19 @@ size_t nano_build_cab_load(uint8_t *out, size_t cap, int list, uint32_t index, c
 size_t nano_build_library_request(uint8_t *out, size_t cap, bool irs_only);
 
 /*
+ * An FX block's model and parameters (Cortex Cloud's FX editor), frames from DrD85/nano-cortex-controller (MIT). Live
+ * edits: audible, the preset is not saved. `slot` 0..4 = pre1..post3.
+ *   model    `<len> C0 18 <slot> 20 <type varint> 88 00 00 00` (nano_fx_params.h: the models the slot takes)
+ *   read     `08 C0 08 03 18 <slot> 89 00 00 00` -> type 0x8A (nano_decode_fx_params). Only for a block that is ON:
+ *            DrD85 saw the pedal crash on a bypassed one.
+ *   param    `0F C0 08 01 18 <slot> 20 <param> 2D <f32 0..1> 63 00 00 00` (verified 2026-10-08: the value changes)
+ */
+size_t nano_build_fx_model(uint8_t *out, size_t cap, uint8_t slot, uint32_t type);
+size_t nano_build_fx_params_request(uint8_t *out, size_t cap, uint8_t slot);
+/* The value is clamped to 0..1. */
+size_t nano_build_fx_param(uint8_t *out, size_t cap, uint8_t slot, uint8_t param, float normalized);
+
+/*
  * Read a preset's expression pedal assignments (Cortex Cloud's request on its Expression Pedal
  * page, captured 2026-09-19): `08 C0 08 03 18 <preset> 3C 00 00 00`. The reply is type 0x3D and
  * carries no preset number: remember which one was asked for.

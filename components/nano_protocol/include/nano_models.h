@@ -38,6 +38,10 @@ typedef struct {
 
 /* NULL when the ID is not in the catalogue. `id_hex` must be uppercase, no spaces. */
 const nano_fx_model_t *nano_lookup_fx_model(const char *id_hex);
+/* The model's type: the varint its ID spells ("FA2E" = 6010), what nano_fx_params.h and the model write use. */
+uint32_t nano_fx_model_type(const nano_fx_model_t *m);
+/* NULL when no catalogue model has this type. */
+const nano_fx_model_t *nano_fx_model_by_type(uint32_t type);
 const char *nano_category_name(nano_category_t c);
 /* Short tag for the tiles ("CMP", "DRV", "PTCH", ...); "" for unknown. */
 const char *nano_category_short(nano_category_t c);

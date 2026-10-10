@@ -236,6 +236,22 @@ bool nano_decode_cab_settings(const uint8_t *d, size_t len, nano_cab_settings_t 
     return ir;
 }
 
+/* ---- FX parameters ------------------------------------------------------ */
+
+int nano_decode_fx_params(const uint8_t *d, size_t len, float *values, int max)
+{
+    nano_proto_iter_t it;
+    nano_field_t f;
+    nano_proto_iter_init(&it, d, len);
+    while (nano_proto_next(&it, &f)) {
+        if (f.field != 4 || f.wire != NANO_WIRE_BYTES) continue;
+        int n = 0;
+        for (; n < max && (size_t)(n + 1) * 4 <= f.len; n++) memcpy(&values[n], f.raw + 4 * n, sizeof(float));
+        return n;
+    }
+    return 0;
+}
+
 /* ---- IR library ---------------------------------------------------------- */
 
 size_t nano_decode_ir_library(const uint8_t *d, size_t len, nano_ir_library_t *out, size_t cap)

@@ -8,7 +8,7 @@
 static const char *TAG = "edits";
 
 static struct {
-    int64_t fx_written_us[NANO_FX_SLOT_COUNT], gate_written_us, capvol_written_us, ir_written_us;
+    int64_t fx_written_us[NANO_FX_SLOT_COUNT], fx_model_written_us[NANO_FX_SLOT_COUNT], gate_written_us, capvol_written_us, ir_written_us;
     uint8_t ir_slot;   /* the IR slot `ir_preset` last showed while on (state field 12): where "on" goes back to */
     int ir_preset;
 } s = { .ir_preset = -1 };
@@ -22,6 +22,22 @@ void block_edits_toggle_fx(uint8_t slot, bool currently_on)
     ESP_LOGI(TAG, "-> fx slot %u %s", slot, currently_on ? "off" : "on");
     g_app.state.fx_on[slot] = !currently_on;
     s.fx_written_us[slot] = app_now_us();
+    ui_mark(UI_STATE);
+    link_schedule_state(CONFIRM_MS);
+}
+
+/* Model (DrD85's FxTypeValue): shown at once from the catalogue; the pedal loads the model's defaults. */
+void block_edits_set_fx_model(uint8_t slot, uint32_t type)
+{
+    const nano_fx_model_t *m = nano_fx_model_by_type(type);
+    if (!g_app.link_ready || !g_app.state_valid || slot >= NANO_FX_SLOT_COUNT || !m) return;
+    uint8_t f[NANO_FRAME_MAX];
+    if (!app_send(f, nano_build_fx_model(f, sizeof(f), slot, type))) return;
+    nano_fx_slot_t *fx = &g_app.state.fx[slot];
+    ESP_LOGI(TAG, "-> fx slot %u model \"%s\" (was \"%s\")", slot, m->name, fx->model ? fx->model->name : fx->id);
+    strlcpy(fx->id, m->id, sizeof(fx->id));
+    fx->model = m;
+    s.fx_model_written_us[slot] = app_now_us();
     ui_mark(UI_STATE);
     link_schedule_state(CONFIRM_MS);
 }
@@ -113,6 +129,10 @@ void block_edits_filter(nano_state_t *dump, int64_t requested_us)
     for (int i = 0; i < NANO_FX_SLOT_COUNT; i++) {
         if (s.fx_written_us[i] > requested_us) {
             dump->fx_on[i] = shown->fx_on[i];
+            held = true;
+        }
+        if (s.fx_model_written_us[i] > requested_us && dump->active_preset == shown->active_preset) {
+            dump->fx[i] = shown->fx[i];
             held = true;
         }
     }

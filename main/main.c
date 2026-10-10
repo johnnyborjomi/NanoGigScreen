@@ -8,7 +8,7 @@
  *   link.c          session: link up / down, state / metadata / settings reads, outputs mute
  *   pedal_in.c      reassembly, decoding and routing of what the pedal sends
  *   preset_select.c block_edits.c tempo.c tuner.c expression.c rename.c: one feature each
- *   remote_page.c   settings read while their page shows (ir_page.c)
+ *   remote_page.c   settings read while their page shows (ir_page.c, fx_page.c)
  *   settings.c      the screen's own settings and the name cache in flash
  *   update_mode.c   Wi-Fi firmware update
  *   app.c           shared state, sending frames, screen sync
@@ -25,6 +25,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "fx_page.h"
 #include "ir_folder_store.h"
 #include "ir_library.h"
 #include "ir_page.h"
@@ -58,7 +59,7 @@ typedef struct {
 
 typedef enum {
     MSG_STATUS, MSG_PREV, MSG_NEXT, MSG_SELECT, MSG_TOGGLE_FX, MSG_TOGGLE_GATE, MSG_CAPTURE_VOLUME, MSG_RENAME,
-    MSG_IR_VIEW, MSG_CAB_SETTING, MSG_CAB_PHASE, MSG_CAB_ON, MSG_CAB_STEP, MSG_IR_LIBRARY, MSG_IR_PICK, MSG_IR_FOLDER, MSG_CAB_MIC, MSG_TUNER, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW,
+    MSG_IR_VIEW, MSG_CAB_SETTING, MSG_CAB_PHASE, MSG_CAB_ON, MSG_CAB_STEP, MSG_IR_LIBRARY, MSG_IR_PICK, MSG_IR_FOLDER, MSG_CAB_MIC, MSG_FX_VIEW, MSG_FX_PARAM, MSG_FX_MODEL, MSG_TUNER, MSG_TUNER_MUTE, MSG_TEMPO_DELTA, MSG_TEMPO_VIEW,
     MSG_LINK, MSG_BANK_SIZE, MSG_LABEL_STYLE, MSG_OUTPUTS_MUTE, MSG_EXP_SHOW, MSG_ROTATE, MSG_BRIGHTNESS,
     MSG_UPDATE_OPEN, MSG_UPDATE_CLOSE,
 } msg_kind_t;
@@ -71,8 +72,9 @@ typedef struct {
     bool flag;      /* on / open / connect / mute / show / 180 degrees / phase inverted / the tile's current state */
     int delta;      /* MSG_TEMPO_DELTA, MSG_CAB_STEP */
     uint8_t value;  /* preset index, FX slot, raw capture volume, IR parameter / mic position / list, a setting's value */
-    uint16_t index; /* MSG_IR_PICK: the IR's position in its list; MSG_IR_FOLDER: op << 8 | folder */
-    float number;   /* MSG_CAB_SETTING: the pedal's 0..1 */
+    uint16_t index; /* MSG_IR_PICK: the IR's position in its list; MSG_IR_FOLDER: op << 8 | folder; MSG_FX_PARAM: the parameter;
+                     * MSG_FX_MODEL: the type */
+    float number;   /* MSG_CAB_SETTING, MSG_FX_PARAM: the pedal's 0..1 */
     char text[MSG_TEXT_CAP]; /* MSG_STATUS: the detail, MSG_RENAME: the new name, MSG_CAB_MIC: the microphone, MSG_IR_PICK: the IR */
 } app_msg_t;
 
@@ -133,6 +135,9 @@ static void ui_on_ir_library(bool open) { post_flag(MSG_IR_LIBRARY, open); }
 static void ui_on_ir_pick(uint8_t list, uint16_t index, const char *name) { app_msg_t m = { .kind = MSG_IR_PICK, .value = list, .index = index }; strlcpy(m.text, name, sizeof(m.text)); post(&m, 0); }
 static void ui_on_cab_step(int delta) { app_msg_t m = { .kind = MSG_CAB_STEP, .delta = delta }; post(&m, 0); }
 static void ui_on_cab_mic(uint8_t position, const char *mic) { post_text(MSG_CAB_MIC, position, mic); }
+static void ui_on_fx_view(uint8_t slot, bool open) { app_msg_t m = { .kind = MSG_FX_VIEW, .value = slot, .flag = open }; post(&m, 0); }
+static void ui_on_fx_param(uint8_t slot, uint8_t param, float n) { app_msg_t m = { .kind = MSG_FX_PARAM, .value = slot, .index = param, .number = n }; post(&m, 0); }
+static void ui_on_fx_model(uint8_t slot, uint32_t type) { app_msg_t m = { .kind = MSG_FX_MODEL, .value = slot, .index = (uint16_t)type }; post(&m, 0); }
 static void ui_on_toggle_fx(uint8_t slot, bool on) { app_msg_t m = { .kind = MSG_TOGGLE_FX, .value = slot, .flag = on }; post(&m, 0); }
 static void ui_on_toggle_gate(bool on) { post_flag(MSG_TOGGLE_GATE, on); }
 static void ui_on_tempo_view(bool open) { post_flag(MSG_TEMPO_VIEW, open); }
@@ -176,6 +181,9 @@ static void on_command(const app_msg_t *m)
     case MSG_IR_PICK: ir_library_pick(m->value, m->index, m->text); break;
     case MSG_IR_FOLDER: ir_folder_store_edit((nano_ir_folder_op_t)(m->index >> 8), m->value, (uint8_t)m->index, m->text); break;
     case MSG_CAB_MIC: ir_page_set_mic(m->value, m->text); break;
+    case MSG_FX_VIEW: fx_page_set_open(m->value, m->flag); break;
+    case MSG_FX_PARAM: fx_page_set_param(m->value, (uint8_t)m->index, m->number); break;
+    case MSG_FX_MODEL: block_edits_set_fx_model(m->value, m->index); break;
     case MSG_TUNER: tuner_set(m->flag); break;
     case MSG_TUNER_MUTE: tuner_set_mute(m->flag); break;
     case MSG_TEMPO_DELTA: tempo_step(m->delta); break;
@@ -260,6 +268,7 @@ void app_main(void)
     settings_load();
     ir_folder_store_load();
     ir_page_init();
+    fx_page_init();
 
     /* Queues before the screen: its callbacks post to them from the first touch on. */
     s_packets = xQueueCreate(PACKET_QUEUE_LEN, sizeof(packet_t));
@@ -281,7 +290,8 @@ void app_main(void)
     nano_ui_callbacks_t ui_cb = {
         .on_prev_preset = ui_on_prev, .on_next_preset = ui_on_next, .on_select_preset = ui_on_select, .on_rename_preset = ui_on_rename,
         .on_capture_volume = ui_on_capture_volume, .on_ir_view = ui_on_ir_view, .on_cab_setting = ui_on_cab_setting,
-        .on_cab_phase = ui_on_cab_phase, .on_cab_on = ui_on_cab_on, .on_cab_step = ui_on_cab_step, .on_ir_library = ui_on_ir_library, .on_ir_pick = ui_on_ir_pick, .on_ir_folder_edit = ui_on_ir_folder_edit, .on_cab_mic = ui_on_cab_mic, .on_toggle_fx = ui_on_toggle_fx, .on_toggle_gate = ui_on_toggle_gate,
+        .on_cab_phase = ui_on_cab_phase, .on_cab_on = ui_on_cab_on, .on_cab_step = ui_on_cab_step, .on_ir_library = ui_on_ir_library, .on_ir_pick = ui_on_ir_pick, .on_ir_folder_edit = ui_on_ir_folder_edit, .on_cab_mic = ui_on_cab_mic,
+        .on_fx_view = ui_on_fx_view, .on_fx_param = ui_on_fx_param, .on_fx_model = ui_on_fx_model, .on_toggle_fx = ui_on_toggle_fx, .on_toggle_gate = ui_on_toggle_gate,
         .on_tuner = ui_on_tuner, .on_tuner_mute = ui_on_tuner_mute, .on_tempo_delta = ui_on_tempo_delta, .on_tempo_view = ui_on_tempo_view,
         .on_link = ui_on_link, .on_bank_size = ui_on_bank_size, .on_label_style = ui_on_label_style, .on_outputs_mute = ui_on_outputs_mute,
         .on_expression_show = ui_on_expression_show, .on_rotation = ui_on_rotation, .on_brightness = ui_on_brightness,

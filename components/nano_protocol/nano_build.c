@@ -197,3 +197,36 @@ size_t nano_build_cab_mic(uint8_t *out, size_t cap, uint32_t kind, const char *i
     nano_pb_end(&w, ir); /* fails past 127 bytes */
     return nano_frame_end(&w, NANO_MSG_CAB_SETTING);
 }
+
+size_t nano_build_fx_model(uint8_t *out, size_t cap, uint8_t slot, uint32_t type)
+{
+    if (slot >= NANO_FX_SLOT_COUNT || !type) return 0;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    nano_pb_varint(&w, 3, slot);
+    nano_pb_varint(&w, 4, type);
+    return nano_frame_end(&w, NANO_MSG_FX_MODEL);
+}
+
+size_t nano_build_fx_params_request(uint8_t *out, size_t cap, uint8_t slot)
+{
+    if (slot >= NANO_FX_SLOT_COUNT) return 0;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    nano_pb_varint(&w, 1, OP_READ);
+    nano_pb_varint(&w, 3, slot);
+    return nano_frame_end(&w, NANO_MSG_FX_PARAMS_REQUEST);
+}
+
+size_t nano_build_fx_param(uint8_t *out, size_t cap, uint8_t slot, uint8_t param, float normalized)
+{
+    if (slot >= NANO_FX_SLOT_COUNT || param > 0x7F) return 0;
+    float n = normalized < 0 ? 0 : normalized > 1 ? 1 : normalized;
+    nano_pb_writer_t w;
+    nano_frame_begin(&w, out, cap);
+    nano_pb_varint(&w, 1, OP_UPDATE);
+    nano_pb_varint(&w, 3, slot);
+    nano_pb_varint(&w, 4, param);
+    nano_pb_f32(&w, 5, n);
+    return nano_frame_end(&w, NANO_MSG_FX_PARAM);
+}

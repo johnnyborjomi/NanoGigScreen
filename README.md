@@ -19,6 +19,9 @@ and shows, with no phone on the floor:
   our own (kept on the screen: + Folder, hold an IR to move it, rename / delete in a folder). Live edits
   like Cortex Cloud's (EXIT on the pedal reverts them, the screen follows)
 - FX block on/off: tap a tile (writes the same bypass frame as NanoGig's control mode)
+- FX editor: hold a tile. Page 1 shows the type in its colour (hold it: the types the slot takes, as tiles), the
+  model (hold it: that type's models) and on / off; the next pages hold the parameters, three a page (sliders with
+  - / +, buttons for the choices). Read while the block is on (never while bypassed), live edits
 - menu (≡): a tuner (note, cents bar, the pedal's reference pitch, a mute label that toggles),
   settings (presets per bank and label style, outputs 1/2 mute, expression indicators; page 2:
   display rotation 0° / 180° and brightness 1–10, both remembered; page 3: firmware version and
@@ -220,4 +223,4 @@ Things to check on the bench, in order:
 ## License
 
 MIT, like NanoGig. Protocol knowledge builds on choldy/nano-cortex-web-editor (MIT),
-rixrix/deskop-nano-cortex (Apache-2.0) and DrD85/nano-cortex-controller (MIT: the preset rename, IR settings read and level / filter writes, IR select and the IR library). Not affiliated with Neural DSP.
+rixrix/deskop-nano-cortex (Apache-2.0) and DrD85/nano-cortex-controller (MIT: the preset rename, IR settings read and level / filter writes, IR select and the IR library, the FX model / parameter frames and parameter tables). Not affiliated with Neural DSP.

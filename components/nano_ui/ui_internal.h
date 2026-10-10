@@ -71,7 +71,7 @@ typedef struct {
 } ui_page_t;
 
 extern ui_page_t page_main, page_menu, page_settings, page_tuner, page_tempo, page_connect, page_update, page_presets,
-    page_source, page_rename, page_ir_list;
+    page_source, page_rename, page_ir_list, page_fx;
 
 void ui_show_view(nano_view_t view, bool notify);
 void ui_go(nano_view_t view);   /* the user's way: nano_ui_show */
@@ -99,5 +99,6 @@ void ir_tab_refresh(bool fresh);
 const char *ir_tab_name(void);             /* the shown IR's name ("" = none), on or off */
 bool ir_is_saved(const char *name);        /* the shown preset was saved with this IR (shown in C_SAVED) */
 void ir_list_refresh(void);                /* the IR list: the current IR changed */
+void fx_from_state(const nano_state_t *st); /* the FX editor: the blocks as the state shows them */
 
 #endif

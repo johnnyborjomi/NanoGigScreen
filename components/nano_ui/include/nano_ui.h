@@ -4,7 +4,8 @@
  *
  * Main view: top bar (link status, tempo, gate, menu button), preset row
  * (prev button, bank label + name, next button; holding prev / next opens the presets
- * list), capture and IR lines, five FX tiles in category colours. Tap a tile to toggle that block. LIST (right of
+ * list), capture and IR lines, five FX tiles in category colours. Tap a tile to toggle that block, hold it to edit
+ * the block (type, model, parameters). LIST (right of
  * the capture / IR lines) opens the presets list; holding the capture or IR line opens its tab of the
  * Capture / IR page.
  *
@@ -38,6 +39,9 @@ typedef enum {
     NANO_VIEW_IR,          /* the IR: name, on / off, phase, < > through the IR list, Level / High pass / Low pass, microphone */
     NANO_VIEW_RENAME,      /* rename a preset (long press on its name): open with nano_ui_open_rename */
     NANO_VIEW_IR_LIST,     /* every IR on the pedal, User / Factory tabs (long press on the IR tab's name): tap one to load it */
+    NANO_VIEW_FX,          /* an FX block (long press on its tile): type, model, on / off, then its parameters */
+    NANO_VIEW_FX_TYPE,     /* the types the block's slot takes, as tiles (long press on the editor's type) */
+    NANO_VIEW_FX_MODEL,    /* one type's models (a type tile, or long press on the editor's model): tap one to load it */
 } nano_view_t;
 
 /* What the firmware update view shows under the Wi-Fi line. */
@@ -86,6 +90,13 @@ typedef struct {
     void (*on_ir_folder_edit)(uint8_t op, uint8_t list, uint8_t folder, const char *text);
     /* IR tab, factory IRs: microphone (one of the read's list) and position 0..5 picked. NULL = read-only. */
     void (*on_cab_mic)(uint8_t position, const char *mic);
+    /* FX editor of slot 0..4 shown (true) / left (false): the app reads the block's parameters while it shows and
+     * the block is on (nano_ui_set_fx_params). */
+    void (*on_fx_view)(uint8_t slot, bool open);
+    /* FX editor: parameter `param` (the model's index, nano_fx_params.h) set to the pedal's 0..1. */
+    void (*on_fx_param)(uint8_t slot, uint8_t param, float normalized);
+    /* FX editor: load model `type` (nano_fx_params.h) into the slot. NULL = no type / model pages. */
+    void (*on_fx_model)(uint8_t slot, uint32_t type);
     /* A tile was tapped: slot 0..4 = pre1..post3, `on` = its state as shown. */
     void (*on_toggle_fx)(uint8_t slot, bool on);
     /* The GATE button was tapped; `on` = its state as shown. */
@@ -156,6 +167,12 @@ void nano_ui_set_ir_settings(const nano_cab_settings_t *settings, int preset, bo
 void nano_ui_set_ir_library(nano_ir_library_t *lib);
 /* The IR folders (copied; the list page shows them while it is open). */
 void nano_ui_set_ir_folders(const nano_ir_folders_t *folders);
+/* The FX editor's parameters as the pedal reported them for `slot` with model `type` in `preset` (NULL = the pedal
+ * answered without any). `fresh` = read after the editor's last change (shown over values still held). */
+void nano_ui_set_fx_params(const float *values, int count, int slot, uint32_t type, int preset, bool fresh);
+/* Open the FX editor of slot 0..4; its pager (for previews / tests). */
+void nano_ui_open_fx(uint8_t slot);
+void nano_ui_fx_page(int index);
 /* IR tab pager (for previews / tests). */
 void nano_ui_ir_page(int index);
 /* Tempo line: `tapping` = the pedal is in tap tempo mode (highlighted). 0 BPM clears it. */

@@ -8,6 +8,7 @@
 #include "nano_assembler.h"
 #include "nano_decode.h"
 #include "nano_build.h"
+#include "nano_fx_params.h"
 #include "nano_models.h"
 #include "nano_proto.h"
 
@@ -538,6 +539,56 @@ static void test_labels_and_models(void)
     CHECK(nano_category_light_text(NANO_CAT_MODULATION) && !nano_category_light_text(NANO_CAT_DELAY));
 }
 
+/* FX editing: DrD85's frames, the parameter tables and how they meet our model catalogue. */
+static void test_fx_editing(void)
+{
+    printf("fx editing\n");
+    uint8_t f[NANO_FRAME_MAX];
+    const uint8_t model[] = { 0x09, 0xC0, 0x18, 0x03, 0x20, 0xFA, 0x2E, 0x88, 0x00, 0x00, 0x00 }; /* post2: Analog Delay */
+    CHECK(nano_build_fx_model(f, sizeof(f), 3, 6010) == sizeof(model) && memcmp(f, model, sizeof(model)) == 0);
+    CHECK(nano_build_fx_model(f, sizeof(f), 5, 6010) == 0 && nano_build_fx_model(f, sizeof(f), 0, 0) == 0);
+    const uint8_t read[] = { 0x08, 0xC0, 0x08, 0x03, 0x18, 0x01, 0x89, 0x00, 0x00, 0x00 };
+    CHECK(nano_build_fx_params_request(f, sizeof(f), 1) == sizeof(read) && memcmp(f, read, sizeof(read)) == 0);
+    const uint8_t param[] = { 0x0F, 0xC0, 0x08, 0x01, 0x18, 0x04, 0x20, 0x02, 0x2D, 0x00, 0x00, 0x00, 0x3F, 0x63, 0x00, 0x00, 0x00 };
+    CHECK(nano_build_fx_param(f, sizeof(f), 4, 2, 0.5f) == sizeof(param) && memcmp(f, param, sizeof(param)) == 0);
+    CHECK(nano_build_fx_param(f, sizeof(f), 4, 2, 7.0f) == sizeof(param) && f[12] == 0x3F && f[11] == 0x80); /* clamped to 1.0 */
+    /* Reply: field 1 = 6, field 4 = packed floats. */
+    const uint8_t reply[] = { 0x08, 0x06, 0x22, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x80, 0x3F };
+    float v[NANO_FX_PARAMS_MAX];
+    CHECK(nano_decode_fx_params(reply, sizeof(reply), v, NANO_FX_PARAMS_MAX) == 3 && v[0] == 0.0f && v[1] == 0.5f && v[2] == 1.0f);
+    CHECK(nano_decode_fx_params(reply, sizeof(reply), v, 2) == 2);
+    CHECK(nano_decode_fx_params(reply, 2, v, NANO_FX_PARAMS_MAX) == 0);
+
+    /* Every catalogue model has its parameters, and every model a slot takes is in the catalogue. */
+    CHECK(nano_fx_model_type(nano_lookup_fx_model("FA2E")) == 6010 && nano_fx_model_type(nano_lookup_fx_model("12")) == 18);
+    CHECK(nano_fx_model_type(nano_lookup_fx_model("C6BB01")) == 24006);
+    CHECK(nano_fx_model_by_type(6010) == nano_lookup_fx_model("FA2E") && nano_fx_model_by_type(1) == NULL);
+    const char *ids[] = { "12", "0D", "06", "BF17", "17", "16", "1B", "B817", "03", "02", "04", "817D", "827D", "867D", "B446", "B246",
+                          "B646", "B546", "C6BB01", "C1BB01", "8927", "8F27", "8C27", "8D27", "D18C01", "8B7D", "A51F", "A31F", "A11F",
+                          "9427", "9727", "9527", "9627", "F036", "F336", "EF36", "EE36", "ED36", "F436", "F536", "DC36", "FA2E", "FF2E",
+                          "FB2E", "FC2E", "FE2E", "F42E", "C83E", "C93E", "C33E", "CB3E", "C73E", "C03E" };
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        const nano_fx_def_t *d = nano_fx_def(nano_fx_model_type(nano_lookup_fx_model(ids[i])));
+        CHECK(d != NULL);
+        if (!d) continue;
+        CHECK(d->param_count >= 1 && d->param_count <= NANO_FX_PARAMS_MAX);
+        for (int k = 0; d->order && k < d->param_count; k++) CHECK(d->order[k] < d->param_count);
+        for (int k = 0; k < d->param_count; k++) {
+            const nano_fx_param_t *p = &d->params[k];
+            if (p->kind == NANO_FX_PARAM_RANGE) CHECK(p->max > p->min && p->step > 0);
+            else CHECK(p->option_count >= 2 && p->options);
+        }
+    }
+    for (int slot = 0; slot < NANO_FX_SLOT_COUNT; slot++) {
+        int n;
+        const uint16_t *types = nano_fx_slot_models(slot, &n);
+        CHECK(types && n >= 13);
+        for (int k = 0; types && k < n; k++) CHECK(nano_fx_model_by_type(types[k]) != NULL);
+    }
+    int n;
+    CHECK(nano_fx_slot_models(5, &n) == NULL && n == 0);
+}
+
 /* Expression pedal (Cortex Cloud captures of 2026-09-19, NanoGig `src/fixtures/hardware-2026-09-19.ts`). */
 static void test_expression(void)
 {
@@ -662,6 +713,7 @@ int main(void)
     test_metadata();
     test_labels_and_models();
     test_expression();
+    test_fx_editing();
     test_malformed();
     test_writer();
     if (failures) {

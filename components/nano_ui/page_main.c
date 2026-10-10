@@ -1,6 +1,7 @@
 /*
  * The gig view: top bar (link status, outputs muted, tempo, menu), preset row (prev, label + footswitch badges +
- * name, next), gate and LIST around the capture / IR lines, five FX tiles in category colours, and the expression
+ * name, next), gate and LIST around the capture / IR lines, five FX tiles in category colours (tap: on / off, hold:
+ * the FX editor), and the expression
  * pedal (a side bar and a track on each assigned tile). Built once; the other pages draw over it.
  */
 #include <stdio.h>
@@ -120,6 +121,8 @@ static void on_tile_clicked(lv_event_t *e)
     if (g_ui.cb.on_toggle_fx) g_ui.cb.on_toggle_fx(slot, s.tile_on[slot]);
 }
 
+static void on_tile_long(lv_event_t *e) { nano_ui_open_fx((uint8_t)(uintptr_t)lv_event_get_user_data(e)); }
+
 /* ---- build ----------------------------------------------------------------------------- */
 
 /* A transparent box over a line: a long press opens `cb`'s page (a tap does nothing). */
@@ -218,7 +221,9 @@ static void build_tiles(lv_obj_t *root)
         lv_obj_set_style_pad_all(t, 2, 0);
         lv_obj_set_clickable(t, true);
         lv_obj_set_ext_click_area(t, 6);
-        lv_obj_add_event_cb(t, on_tile_clicked, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        /* A tap toggles, a hold opens the editor (short clicks only: no toggle when the hold is let go). */
+        lv_obj_add_event_cb(t, on_tile_clicked, LV_EVENT_SHORT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(t, on_tile_long, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)i);
         lv_obj_t *name = ui_label(t, &montserrat_medium_12, C_DIM);
         lv_obj_set_width(name, TILE_W - 4);
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
@@ -469,6 +474,7 @@ void nano_ui_set_state(const nano_state_t *st, const nano_metadata_t *meta)
     ui_line_set(w.capture_dot, w.capture, st->capture_name, st->capture_on, "No capture");
     ui_line_set(w.ir_dot, w.ir, st->ir_short_name, st->cab_on, "No IR");
     source_from_state(st);
+    fx_from_state(st);
     s.gate_on = st->gate_on;
     lv_obj_set_style_bg_color(w.gate, lv_color_hex(st->gate_on ? nano_category_color(NANO_CAT_UTILITY) : C_OFF), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(w.gate, 0), lv_color_hex(st->gate_on ? C_FX_TEXT : C_TEXT), 0);

@@ -84,6 +84,8 @@ static void noop_cab(uint8_t p, float n) { (void)p; (void)n; }
 static void noop_mic(uint8_t p, const char *m) { (void)p; (void)m; }
 static void noop_folder(uint8_t op, uint8_t list, uint8_t folder, const char *text) { (void)op, (void)list, (void)folder, (void)text; }
 static void noop_pick(uint8_t list, uint16_t index, const char *name) { (void)list, (void)index, (void)name; }
+static void noop_fx_param(uint8_t slot, uint8_t param, float n) { (void)slot, (void)param, (void)n; }
+static void noop_fx_model(uint8_t slot, uint32_t type) { (void)slot, (void)type; }
 
 int main(int argc, char **argv)
 {
@@ -97,7 +99,7 @@ int main(int argc, char **argv)
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 
-    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_on = noop_b, .on_cab_step = noop_i, .on_ir_library = noop_b, .on_ir_pick = noop_pick, .on_ir_folder_edit = noop_folder, .on_cab_mic = noop_mic };
+    nano_ui_callbacks_t cb = { .on_prev_preset = noop, .on_next_preset = noop, .on_toggle_fx = noop_fx, .on_toggle_gate = noop_b, .on_tuner = noop_b, .on_tuner_mute = noop_b, .on_tempo_delta = noop_i, .on_tempo_view = noop_b, .on_link = noop_b, .on_bank_size = noop_u8, .on_label_style = noop_u8, .on_outputs_mute = noop_b, .on_expression_show = noop_b, .on_rotation = noop_b, .on_brightness = noop_u8, .on_capture_volume = noop_u8, .on_rename_preset = noop_rename, .on_ir_view = noop_b, .on_cab_setting = noop_cab, .on_cab_phase = noop_b, .on_cab_on = noop_b, .on_cab_step = noop_i, .on_ir_library = noop_b, .on_ir_pick = noop_pick, .on_ir_folder_edit = noop_folder, .on_cab_mic = noop_mic, .on_fx_view = noop_fx, .on_fx_param = noop_fx_param, .on_fx_model = noop_fx_model };
     nano_ui_create(disp, &cb);
 
     static nano_metadata_t meta;
@@ -425,6 +427,48 @@ int main(int argc, char **argv)
         if (rename) lv_obj_send_event(rename, LV_EVENT_CLICKED, NULL);
         render(50);
         save(dir, "9y5-ir-folder-rename");
+        nano_ui_show(NANO_VIEW_MAIN);
+        /* FX editor (hold a tile): Post 2 = Analog Delay (on), Pre 1 = Green 808 (off). */
+        nano_state_t fx = st;
+        fx.has_bypass = true;
+        strcpy(fx.fx[3].id, "FA2E");
+        fx.fx[3].model = nano_lookup_fx_model("FA2E");
+        fx.fx_on[3] = true;
+        strcpy(fx.fx[0].id, "1B");
+        fx.fx[0].model = nano_lookup_fx_model("1B");
+        fx.fx_on[0] = false;
+        nano_ui_set_state(&fx, &meta);
+        nano_ui_open_fx(3);
+        render(50);
+        save(dir, "9z-fx-reading");
+        static const float delay[12] = { 0.35f, 0.42f, 0.3f, 0.5f, 0.2f, 0.1f, 0.6f, 0.0f, 1.0f, 0.25f, 1.0f, 0.65f };
+        nano_ui_set_fx_params(delay, 12, 3, 6010, fx.active_preset, true);
+        render(50);
+        save(dir, "9z1-fx-first");
+        nano_ui_fx_page(1);
+        render(50);
+        save(dir, "9z2-fx-params");
+        nano_ui_fx_page(2);
+        render(50);
+        save(dir, "9z3-fx-params-choices");
+        nano_ui_show(NANO_VIEW_FX_TYPE); /* hold on the type (nano_ui_find would find the gig view's tile under it) */
+        render(50);
+        save(dir, "9z4-fx-types");
+        lv_obj_t *dly = nano_ui_find("Delay");
+        if (dly) lv_obj_send_event(dly, LV_EVENT_CLICKED, NULL);
+        render(50);
+        save(dir, "9z5-fx-models");
+        nano_ui_show(NANO_VIEW_MAIN);
+        nano_ui_open_fx(0);
+        render(50);
+        save(dir, "9z6-fx-off");
+        nano_ui_show(NANO_VIEW_FX_TYPE);
+        render(50);
+        save(dir, "9z7-fx-types-pre");
+        lv_obj_t *od = nano_ui_find("Overdrive");
+        if (od) lv_obj_send_event(od, LV_EVENT_CLICKED, NULL);
+        render(50);
+        save(dir, "9z8-fx-models-drive");
         nano_ui_show(NANO_VIEW_MAIN);
         /* Rename page (long press on the name): 20 characters, then the pedal's refusal. */
         nano_ui_open_rename(0);

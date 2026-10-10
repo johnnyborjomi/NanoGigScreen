@@ -34,6 +34,9 @@ static ui_page_t *const PAGES[] = {
     [NANO_VIEW_IR] = &page_source,
     [NANO_VIEW_RENAME] = &page_rename,
     [NANO_VIEW_IR_LIST] = &page_ir_list,
+    [NANO_VIEW_FX] = &page_fx,
+    [NANO_VIEW_FX_TYPE] = &page_fx,
+    [NANO_VIEW_FX_MODEL] = &page_fx,
 };
 
 /* ---- page switching ---------------------------------------------------------------- */

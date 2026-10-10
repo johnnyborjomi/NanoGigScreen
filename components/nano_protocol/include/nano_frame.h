@@ -65,11 +65,15 @@ enum {
     NANO_MSG_CAB_SETTING = 0x5e,     /* nano_build_cab_setting */
     NANO_MSG_CAB_SETTINGS_REQUEST = 0x5f, /* nano_build_cab_settings_request */
     NANO_MSG_CAB_SETTINGS = 0x60,    /* reply to nano_build_cab_settings_request (nano_decode_cab_settings) */
+    NANO_MSG_FX_PARAM = 0x63,        /* nano_build_fx_param */
     NANO_MSG_RENAME = 0x6f,          /* nano_build_preset_rename */
     NANO_MSG_RENAME_REPLY = 0x70,    /* reply to nano_build_preset_rename */
     NANO_MSG_CHANGED = 0x73,         /* unsaved changes on / off (field 3) */
     NANO_MSG_TUNER = 0x7f,           /* tuner on/off (our write and the pedal's report) */
     NANO_MSG_TUNER_PITCH = 0x80,     /* ~30/s while a note sounds */
+    NANO_MSG_FX_MODEL = 0x88,        /* nano_build_fx_model */
+    NANO_MSG_FX_PARAMS_REQUEST = 0x89, /* nano_build_fx_params_request */
+    NANO_MSG_FX_PARAMS = 0x8a,       /* reply (nano_decode_fx_params) */
     NANO_MSG_TAP_TEMPO = 0x91,       /* tap tempo: field 3 = 1 while the mode is on, field 5 = BPM (f32); field 3 absent = mode left */
     NANO_MSG_EXPRESSION_VALUES = 0xaa,
 };
